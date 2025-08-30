@@ -20,7 +20,7 @@ class APIConfig:
     google_cse_search_engine_id: Optional[str] = None
     reddit_client_id: Optional[str] = None
     reddit_client_secret: Optional[str] = None
-    reddit_user_agent: Optional[str] = None
+    reddit_user_agent: Optional[str] = "MultiModalResearchAssistant/1.0"
     assemblyai_api_key: Optional[str] = None
     serpapi_api_key: Optional[str] = None
     huggingface_api_key: Optional[str] = None
@@ -35,6 +35,15 @@ class ModelConfig:
     upload_dir: Path = Path("uploads")
     temp_dir: Path = Path("temp_files")
     reports_dir: Path = Path("reports")
+    
+    def __post_init__(self):
+        # Convert string paths to Path objects if needed
+        if isinstance(self.upload_dir, str):
+            self.upload_dir = Path(self.upload_dir)
+        if isinstance(self.temp_dir, str):
+            self.temp_dir = Path(self.temp_dir)
+        if isinstance(self.reports_dir, str):
+            self.reports_dir = Path(self.reports_dir)
 
 @dataclass
 class StreamlitConfig:
@@ -69,7 +78,20 @@ def load_config_from_file(config_path: Path) -> Dict[str, Any]:
     try:
         if config_path.exists():
             with open(config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+                
+                # Handle both old and new config file formats
+                if 'api' in data:
+                    # Old format - convert to new format
+                    new_format = {
+                        'api_config': data.get('api', {}),
+                        'model_config': data.get('model', {}),
+                        'streamlit_config': data.get('streamlit', {})
+                    }
+                    return new_format
+                else:
+                    # New format
+                    return data
         else:
             logger.warning(f"Config file {config_path} not found, using defaults")
             return {}
@@ -85,18 +107,18 @@ def load_config_from_env() -> Dict[str, Any]:
     api_keys = {
         'openai_api_key': os.getenv('OPENAI_API_KEY'),
         'google_cse_api_key': os.getenv('GOOGLE_CSE_API_KEY'),
-        'google_cse_search_engine_id': os.getenv('GOOGLE_CSE_SEARCH_ENGINE_ID'),
+        'google_cse_search_engine_id': os.getenv('GOOGLE_CSE_ID') or os.getenv('GOOGLE_CSE_SEARCH_ENGINE_ID'),
         'reddit_client_id': os.getenv('REDDIT_CLIENT_ID'),
         'reddit_client_secret': os.getenv('REDDIT_CLIENT_SECRET'),
-        'reddit_user_agent': os.getenv('REDDIT_USER_AGENT'),
+        'reddit_user_agent': os.getenv('REDDIT_USER_AGENT', 'MultiModalResearchAssistant/1.0'),
         'assemblyai_api_key': os.getenv('ASSEMBLYAI_API_KEY'),
-        'serpapi_api_key': os.getenv('SERPAPI_API_KEY'),
+        'serpapi_api_key': os.getenv('SERPAPI_KEY') or os.getenv('SERPAPI_API_KEY'),
         'huggingface_api_key': os.getenv('HUGGINGFACE_API_KEY'),
     }
     
     # Model settings
     model_settings = {
-        'whisper_model_size': os.getenv('WHISPER_MODEL_SIZE', 'base'),
+        'whisper_model_size': os.getenv('WHISPER_MODEL_SIZE', os.getenv('WHISPER_MODEL', 'base')),
         'max_search_results': int(os.getenv('MAX_SEARCH_RESULTS', '10')),
         'max_text_length': int(os.getenv('MAX_TEXT_LENGTH', '4000')),
         'max_video_duration': int(os.getenv('MAX_VIDEO_DURATION', '600')),
@@ -131,16 +153,22 @@ def get_config() -> AppConfig:
     merged_config = {}
     
     # Merge API config
-    api_config = {**file_config.get('api_config', {}), **env_config.get('api_config', {})}
-    merged_config['api_config'] = APIConfig(**api_config)
+    api_config_data = {**file_config.get('api_config', {}), **env_config.get('api_config', {})}
+    # Remove None values
+    api_config_data = {k: v for k, v in api_config_data.items() if v is not None}
+    merged_config['api_config'] = APIConfig(**api_config_data)
     
     # Merge model config
-    model_config = {**file_config.get('model_config', {}), **env_config.get('model_config', {})}
-    merged_config['model_config'] = ModelConfig(**model_config)
+    model_config_data = {**file_config.get('model_config', {}), **env_config.get('model_config', {})}
+    # Remove None values
+    model_config_data = {k: v for k, v in model_config_data.items() if v is not None}
+    merged_config['model_config'] = ModelConfig(**model_config_data)
     
     # Merge streamlit config
-    streamlit_config = {**file_config.get('streamlit_config', {}), **env_config.get('streamlit_config', {})}
-    merged_config['streamlit_config'] = StreamlitConfig(**streamlit_config)
+    streamlit_config_data = {**file_config.get('streamlit_config', {}), **env_config.get('streamlit_config', {})}
+    # Remove None values
+    streamlit_config_data = {k: v for k, v in streamlit_config_data.items() if v is not None}
+    merged_config['streamlit_config'] = StreamlitConfig(**streamlit_config_data)
     
     return AppConfig(**merged_config)
 
@@ -175,11 +203,20 @@ def setup_environment() -> Dict[str, Any]:
 def save_config(config: AppConfig, config_path: Path = Path("config.json")):
     """Save configuration to JSON file"""
     try:
+        # Convert Path objects to strings for JSON serialization
         config_dict = {
             'api_config': asdict(config.api_config),
             'model_config': asdict(config.model_config),
             'streamlit_config': asdict(config.streamlit_config)
         }
+        
+        # Convert Path objects to strings
+        if 'upload_dir' in config_dict['model_config']:
+            config_dict['model_config']['upload_dir'] = str(config_dict['model_config']['upload_dir'])
+        if 'temp_dir' in config_dict['model_config']:
+            config_dict['model_config']['temp_dir'] = str(config_dict['model_config']['temp_dir'])
+        if 'reports_dir' in config_dict['model_config']:
+            config_dict['model_config']['reports_dir'] = str(config_dict['model_config']['reports_dir'])
         
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config_dict, f, indent=2, default=str)
