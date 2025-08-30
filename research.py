@@ -6,9 +6,20 @@ import aiohttp
 import json
 import os
 import time
-import whisper
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    print("Warning: Whisper not available. Audio transcription will be limited.")
+
 import cv2
-import pytesseract
+try:
+    import pytesseract
+    PYTESSERACT_AVAILABLE = True
+except ImportError:
+    PYTESSERACT_AVAILABLE = False
+    print("Warning: pytesseract not available. OCR features will be limited.")
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -16,19 +27,63 @@ from pathlib import Path
 import logging
 
 # Core imports for different functionalities
-from duckduckgo_search import DDGS
-from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp
-from transformers import (
-    BlipProcessor, BlipForConditionalGeneration,
-    pipeline, AutoTokenizer, AutoModelForSequenceClassification
-)
-from PIL import Image
+try:
+    from duckduckgo_search import DDGS
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
+    print("Warning: duckduckgo_search not available. Web search will be limited.")
+
+try:
+    from youtube_transcript_api import YouTubeTranscriptApi
+    YOUTUBE_TRANSCRIPT_AVAILABLE = True
+except ImportError:
+    YOUTUBE_TRANSCRIPT_AVAILABLE = False
+    print("Warning: youtube_transcript_api not available. YouTube features will be limited.")
+
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except ImportError:
+    YT_DLP_AVAILABLE = False
+    print("Warning: yt_dlp not available. Video download features will be limited.")
+try:
+    from transformers import (
+        BlipProcessor, BlipForConditionalGeneration,
+        pipeline, AutoTokenizer, AutoModelForSequenceClassification
+    )
+    TRANSFORMERS_AVAILABLE = True
+except (ImportError, RuntimeError) as e:
+    TRANSFORMERS_AVAILABLE = False
+    print(f"Warning: Transformers not available ({str(e)}). Some AI features will be limited.")
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("Warning: PIL not available. Image processing will be limited.")
+
 import requests
-import wikipedia
-import praw
+try:
+    import wikipedia
+    WIKIPEDIA_AVAILABLE = True
+except ImportError:
+    WIKIPEDIA_AVAILABLE = False
+    print("Warning: wikipedia not available. Wikipedia search will be limited.")
+
+try:
+    import praw
+    PRAW_AVAILABLE = True
+except ImportError:
+    PRAW_AVAILABLE = False
+    print("Warning: praw not available. Reddit features will be limited.")
 from tenacity import retry, stop_after_attempt, wait_exponential
-import spacy
+try:
+    import spacy
+    SPACY_AVAILABLE = True
+except ImportError:
+    SPACY_AVAILABLE = False
+    print("Warning: spaCy not available. Some NLP features will be limited.")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -57,22 +112,26 @@ class AgenticResearchConfig:
     """Configuration class for API keys and settings"""
     
     def __init__(self):
-        # API Keys - Replace with your actual keys
-        self.OPENAI_API_KEY = "sk-your-openai-api-key-here"
-        self.GOOGLE_CSE_API_KEY = "your-google-cse-api-key"
-        self.GOOGLE_CSE_ID = "your-google-cse-id"
-        self.REDDIT_CLIENT_ID = "your-reddit-client-id"
-        self.REDDIT_CLIENT_SECRET = "your-reddit-client-secret"
-        self.ASSEMBLYAI_API_KEY = "your-assemblyai-api-key"
-        self.SERPAPI_KEY = "your-serpapi-key"
+        # Import the new config system
+        from config import get_config
+        config = get_config()
         
-        # Model configurations
-        self.WHISPER_MODEL = "base"  # tiny, base, small, medium, large
-        self.MAX_SEARCH_RESULTS = 10
-        self.MAX_VIDEO_DURATION = 3600  # 1 hour max
+        # API Keys from config system
+        self.OPENAI_API_KEY = config.api_config.openai_api_key
+        self.GOOGLE_CSE_API_KEY = config.api_config.google_cse_api_key
+        self.GOOGLE_CSE_ID = config.api_config.google_cse_id
+        self.REDDIT_CLIENT_ID = config.api_config.reddit_client_id
+        self.REDDIT_CLIENT_SECRET = config.api_config.reddit_client_secret
+        self.ASSEMBLYAI_API_KEY = config.api_config.assemblyai_api_key
+        self.SERPAPI_KEY = config.api_config.serpapi_key
         
-        # File paths
-        self.TEMP_DIR = Path("temp_files")
+        # Model configurations from config system
+        self.WHISPER_MODEL = config.model_config.whisper_model
+        self.MAX_SEARCH_RESULTS = config.model_config.max_search_results
+        self.MAX_VIDEO_DURATION = config.model_config.max_video_duration
+        
+        # File paths from config system
+        self.TEMP_DIR = config.model_config.temp_dir
         self.TEMP_DIR.mkdir(exist_ok=True)
 
 class WebSearchEngine:
@@ -247,6 +306,9 @@ class VideoAudioProcessor:
         
     def load_whisper_model(self):
         """Load Whisper model for speech-to-text"""
+        if not WHISPER_AVAILABLE:
+            logger.warning("Whisper not available. Audio transcription disabled.")
+            return
         if not self.whisper_model:
             logger.info(f"Loading Whisper model: {self.config.WHISPER_MODEL}")
             self.whisper_model = whisper.load_model(self.config.WHISPER_MODEL)
@@ -407,6 +469,9 @@ class ImageProcessor:
         
     def load_blip_model(self):
         """Load BLIP model for image captioning"""
+        if not TRANSFORMERS_AVAILABLE:
+            logger.warning("Transformers not available. Image captioning disabled.")
+            return
         if not self.blip_processor:
             logger.info("Loading BLIP image captioning model")
             self.blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
@@ -434,9 +499,15 @@ class ImageProcessor:
     def generate_image_caption(self, image_path: str) -> str:
         """Generate caption for image using BLIP"""
         try:
+            if not TRANSFORMERS_AVAILABLE:
+                return "Image captioning not available (transformers not loaded)"
+            
             logger.info(f"Generating caption for image: {image_path}")
             
             self.load_blip_model()
+            
+            if not PIL_AVAILABLE:
+                return "Image captioning not available (PIL not loaded)"
             
             image = Image.open(image_path).convert('RGB')
             inputs = self.blip_processor(image, return_tensors="pt")
@@ -535,15 +606,27 @@ class IntelligentFusionEngine:
         
     def load_nlp_models(self):
         """Load NLP models for text processing"""
+        if not TRANSFORMERS_AVAILABLE:
+            logger.warning("Transformers not available. NLP models disabled.")
+            return
+            
         if not self.summarizer:
             logger.info("Loading NLP models")
-            self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-            self.sentiment_analyzer = pipeline("sentiment-analysis")
-            
             try:
-                self.nlp = spacy.load("en_core_web_sm")
-            except OSError:
-                logger.warning("spaCy model not found. Install with: python -m spacy download en_core_web_sm")
+                self.summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+                self.sentiment_analyzer = pipeline("sentiment-analysis")
+            except Exception as e:
+                logger.error(f"Failed to load transformers pipelines: {e}")
+                self.summarizer = None
+                self.sentiment_analyzer = None
+            
+            if SPACY_AVAILABLE:
+                try:
+                    self.nlp = spacy.load("en_core_web_sm")
+                except OSError:
+                    logger.warning("spaCy model not found. Install with: python -m spacy download en_core_web_sm")
+                    self.nlp = None
+            else:
                 self.nlp = None
     
     def extract_key_entities(self, text: str) -> List[str]:

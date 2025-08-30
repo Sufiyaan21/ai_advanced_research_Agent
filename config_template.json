@@ -1,0 +1,29 @@
+{
+  "api": {
+    "openai_api_key": "your-openai-api-key-here",
+    "google_cse_api_key": "your-google-cse-api-key",
+    "google_cse_id": "your-google-cse-id",
+    "reddit_client_id": "your-reddit-client-id",
+    "reddit_client_secret": "your-reddit-client-secret",
+    "assemblyai_api_key": "your-assemblyai-api-key",
+    "serpapi_key": "your-serpapi-key",
+    "huggingface_api_key": "your-huggingface-api-key"
+  },
+  "model": {
+    "whisper_model": "base",
+    "max_search_results": 10,
+    "max_video_duration": 3600,
+    "max_text_length": 2000,
+    "max_summary_length": 200,
+    "min_summary_length": 50
+  },
+  "streamlit": {
+    "page_title": "Multi-Modal Research Assistant",
+    "page_icon": "🤖",
+    "layout": "wide",
+    "max_upload_size_mb": 100,
+    "show_confidence_scores": true,
+    "show_source_details": true,
+    "enable_download": true
+  }
+}

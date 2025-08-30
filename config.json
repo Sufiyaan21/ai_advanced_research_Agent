@@ -1,0 +1,33 @@
+{
+  "api_config": {
+    "openai_api_key": null,
+    "google_cse_api_key": "AIzaSyDaKjQD6Pnwbs5VfCUsB_1KkqaVvQFvRIo",
+    "google_cse_search_engine_id": "e47cbac4f16ba4c10",
+    "reddit_client_id": "JKS8xMVTrILlKfCd_HxbiQ",
+    "reddit_client_secret": "ehHMYH0RzaImb-e3spRDlPwWfSOPLg",
+    "reddit_user_agent": "MultiModalResearchAssistant/1.0",
+    "assemblyai_api_key": null,
+    "serpapi_api_key": "6af2eee008322a8b40a065fc81b7d9f5431aaaabf31abccd86ee31ff95f15313",
+    "huggingface_api_key": null
+  },
+  "model_config": {
+    "whisper_model_size": "base",
+    "max_search_results": 10,
+    "max_text_length": 4000,
+    "max_video_duration": 600,
+    "upload_dir": "uploads",
+    "temp_dir": "temp_files",
+    "reports_dir": "reports"
+  },
+  "streamlit_config": {
+    "page_title": "Multi-Modal Research Assistant",
+    "page_icon": "🤖",
+    "layout": "wide",
+    "max_upload_size_mb": 200,
+    "allowed_image_types": ["jpg", "jpeg", "png", "gif", "bmp", "webp"],
+    "allowed_audio_types": ["mp3", "wav", "m4a", "flac", "aac"],
+    "allowed_video_types": ["mp4", "avi", "mov", "mkv", "webm"],
+    "show_source_details": true,
+    "enable_download": true
+  }
+}
