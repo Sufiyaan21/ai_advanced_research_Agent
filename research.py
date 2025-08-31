@@ -525,113 +525,238 @@ class VideoAudioProcessor:
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_youtube_transcript(self, video_url: str) -> Optional[ResearchSource]:
-        """CORRECT FIX: YouTube transcript extraction using instance methods"""
+        """FIXED: Enhanced YouTube transcript extraction with comprehensive error handling"""
+    
         if not YOUTUBE_TRANSCRIPT_AVAILABLE:
-            logger.warning("YouTube transcript API not available")
+            logger.error("❌ YouTube transcript API not available")
             return None
-            
+    
         try:
-            video_id = self.extract_video_id(video_url)
-            if not video_id:
-                logger.error(f"Could not extract video ID from URL: {video_url}")
-                return None
-            
-            logger.info(f"Extracting YouTube transcript for video: {video_id}")
-            
-            # CORRECT FIX: Create an instance of YouTubeTranscriptApi
             from youtube_transcript_api import YouTubeTranscriptApi
-            
-            # Create instance
+            from youtube_transcript_api._errors import (
+                TranscriptsDisabled, NoTranscriptFound, VideoUnavailable,
+                TooManyRequests, YouTubeRequestFailed
+        )
+        except ImportError:
+            logger.error("❌ Could not import YouTube transcript API")
+            return None
+    
+    # Extract video ID with enhanced validation
+        video_id = self.extract_video_id(video_url)
+        if not video_id:
+            logger.error(f"❌ Invalid YouTube URL: {video_url}")
+            return None
+    
+        logger.info(f"🎯 Processing YouTube video: {video_id}")
+    
+    # Pre-flight accessibility check
+        try:
+            check_url = f"https://www.youtube.com/watch?v={video_id}"
+            response = requests.get(check_url, timeout=15, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+        
+            if response.status_code != 200:
+                logger.error(f"❌ Video not accessible (HTTP {response.status_code})")
+                return None
+        
+        # Check for common error indicators
+            error_indicators = [
+                'This video is private', 'Video unavailable', 
+                'This video has been removed', 'Sign in to confirm your age'
+        ]
+        
+            for indicator in error_indicators:
+                if indicator in response.text:
+                    logger.error(f"❌ Video issue: {indicator}")
+                    return None
+        
+            logger.info("✅ Video accessibility confirmed")
+        
+        except Exception as access_error:
+            logger.warning(f"⚠️ Accessibility check failed: {access_error}")
+    
+    # Enhanced transcript extraction with multiple strategies
+        transcript_data = None
+        extraction_info = {}
+    
+        try:
             api = YouTubeTranscriptApi()
-            
-            transcript_data = None
-            
-            # Method 1: Try with English language preference
-            try:
-                logger.info("Trying English transcript...")
-                transcript_data = api.get_transcript(video_id, languages=['en', 'en-US', 'en-GB'])
-                logger.info("✅ English transcript found")
-            except Exception as e1:
-                logger.info(f"English transcript failed: {e1}")
-                
-                # Method 2: Try without language filter
+        
+        # Strategy 1: Direct language-specific requests
+            logger.info("🔄 Strategy 1: Direct language extraction...")
+            for lang_code in ['en', 'en-US', 'en-GB']:
                 try:
-                    logger.info("Trying any available transcript...")
-                    transcript_data = api.get_transcript(video_id)
-                    logger.info("✅ Transcript found (any language)")
-                except Exception as e2:
-                    logger.info(f"Direct transcript failed: {e2}")
-                    
-                    # Method 3: List available transcripts and pick one
-                    try:
-                        logger.info("Listing available transcripts...")
-                        transcript_list = api.list_transcripts(video_id)
-                        
-                        # Try to get English first
-                        try:
-                            transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
-                            transcript_data = transcript.fetch()
-                            logger.info("✅ Found English transcript via list method")
-                        except:
-                            # Get any available transcript
-                            try:
-                                transcript = transcript_list.find_generated_transcript(['en'])
-                                transcript_data = transcript.fetch()
-                                logger.info("✅ Found auto-generated English transcript")
-                            except:
-                                # Get the first available transcript
-                                for transcript in transcript_list:
-                                    try:
-                                        transcript_data = transcript.fetch()
-                                        logger.info(f"✅ Found transcript in language: {transcript.language}")
-                                        break
-                                    except:
-                                        continue
-                    except Exception as e3:
-                        logger.error(f"List transcripts failed: {e3}")
-                        return None
-            
+                    transcript_data = api.get_transcript(video_id, languages=[lang_code])
+                    extraction_info = {'method': 'direct', 'language': lang_code}
+                    logger.info(f"✅ Success with {lang_code}")
+                    break
+                except NoTranscriptFound:
+                    continue
+                except Exception as e:
+                    logger.debug(f"Language {lang_code} failed: {e}")
+                    continue
+        
+        # Strategy 2: Comprehensive listing approach
             if not transcript_data:
-                logger.error(f"No transcript available for video: {video_id}")
-                logger.info("💡 This video may not have captions/transcripts enabled")
+                logger.info("🔄 Strategy 2: Transcript listing...")
+                try:
+                    transcript_list = api.list_transcripts(video_id)
+                    transcripts = list(transcript_list)
+                
+                    if not transcripts:
+                        logger.error("❌ No transcripts available")
+                        return None
+                
+                    logger.info(f"📋 Found {len(transcripts)} transcript(s)")
+                
+                # Try manual English first, then auto English, then any
+                    transcript_list = api.list_transcripts(video_id)  # Refresh
+                
+                    for transcript in transcript_list:
+                        try:
+                            if transcript.language_code.startswith('en'):
+                                transcript_data = transcript.fetch()
+                                extraction_info = {
+                                    'method': 'listing',
+                                    'language': transcript.language,
+                                    'type': 'auto' if transcript.is_generated else 'manual'
+                                }
+                                logger.info(f"✅ Success with {transcript.language}")
+                                break
+                        except Exception as fetch_error:
+                            logger.debug(f"Fetch failed for {transcript.language}: {fetch_error}")
+                            continue
+                
+                # If no English found, try any language
+                    if not transcript_data:
+                        transcript_list = api.list_transcripts(video_id)
+                        for transcript in transcript_list:
+                            try:
+                                transcript_data = transcript.fetch()
+                                extraction_info = {
+                                    'method': 'listing_any',
+                                    'language': transcript.language,
+                                    'type': 'auto' if transcript.is_generated else 'manual'
+                                }
+                                logger.info(f"✅ Using {transcript.language} transcript")
+                                break
+                            except:
+                                continue
+                            
+                except Exception as list_error:
+                    logger.error(f"Listing approach failed: {list_error}")
+        
+        # Strategy 3: No-filter fallback
+            if not transcript_data:
+                logger.info("🔄 Strategy 3: No-filter fallback...")
+                try:
+                    transcript_data = api.get_transcript(video_id)
+                    extraction_info = {'method': 'no_filter', 'language': 'auto'}
+                    logger.info("✅ No-filter success")
+                except Exception as no_filter_error:
+                    logger.error(f"No-filter failed: {no_filter_error}")
+        
+        # Process results
+            if not transcript_data:
+                logger.error(f"❌ All extraction strategies failed for: {video_id}")
                 return None
-            
-            # Process transcript data
-            transcript_text = " ".join([item.get('text', '') for item in transcript_data])
-            transcript_text = re.sub(r'\s+', ' ', transcript_text).strip()
-            
-            if not transcript_text:
-                logger.error("Transcript text is empty after processing")
+        
+        # Process transcript safely
+            transcript_text = self._process_transcript_safely(transcript_data)
+            if not transcript_text or len(transcript_text.strip()) < 20:
+                logger.error("❌ Transcript too short after processing")
                 return None
-            
-            # Get video title
-            title = f'YouTube Video {video_id}'
-            try:
-                video_info = self.get_video_info(video_url)
-                if video_info and video_info.get('title'):
-                    title = video_info['title']
-            except Exception as e:
-                logger.warning(f"Could not get video title: {e}")
-            
-            logger.info(f"Successfully extracted transcript: {title} ({len(transcript_text)} characters)")
-            
+        
+        # Get video title
+            title = self._get_video_title_safely(video_id)
+        
+            logger.info(f"🎉 SUCCESS: {len(transcript_text)} characters extracted")
+        
             return ResearchSource(
                 title=title,
                 content=transcript_text,
                 url=video_url,
                 source_type='youtube_transcript',
-                confidence=0.85,
+                confidence=0.9 if extraction_info.get('type') == 'manual' else 0.8,
                 metadata={
                     'video_id': video_id,
-                    'transcript_length': len(transcript_text),
-                    'extraction_method': 'instance_method_fix'
+                    'extraction_method': extraction_info.get('method', 'unknown'),
+                    'language': extraction_info.get('language', 'unknown'),
+                    'transcript_type': extraction_info.get('type', 'unknown'),
+                    'transcript_length': len(transcript_text)
                 }
             )
-            
-        except Exception as e:
-            logger.error(f"YouTube transcript extraction failed: {str(e)}")
-            logger.info("💡 Video may not have available transcripts")
+        
+        except TranscriptsDisabled:
+            logger.error(f"❌ Transcripts disabled for video: {video_id}")
             return None
+        except VideoUnavailable:
+            logger.error(f"❌ Video unavailable: {video_id}")
+            return None
+        except TooManyRequests:
+            logger.error(f"❌ Rate limit exceeded: {video_id}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Unexpected error: {e}")
+            return None
+
+    def _process_transcript_safely(self, transcript_data: List[Dict]) -> str:
+        """Safely process transcript data with enhanced error handling"""
+        try:
+            if not transcript_data or not isinstance(transcript_data, list):
+                return ""
+        
+            text_segments = []
+            for segment in transcript_data:
+                if isinstance(segment, dict):
+                    text = segment.get('text', '').strip()
+                    if text:
+                    # Clean subtitle artifacts
+                        text = re.sub(r'\[.*?\]', '', text)  # [Music], [Applause]
+                        text = re.sub(r'\(.*?\)', '', text)  # (inaudible)
+                        text = re.sub(r'\s+', ' ', text).strip()
+                        if text:
+                            text_segments.append(text)
+        
+            full_transcript = ' '.join(text_segments)
+            full_transcript = re.sub(r'\s+', ' ', full_transcript).strip()
+        
+            logger.info(f"Processed {len(text_segments)} segments → {len(full_transcript)} characters")
+            return full_transcript
+        
+        except Exception as e:
+            logger.error(f"Transcript processing failed: {e}")
+            return ""
+
+    def _get_video_title_safely(self, video_id: str) -> str:
+        """Safely get video title with fallbacks"""
+        try:
+        # Try yt-dlp first
+            if YT_DLP_AVAILABLE:
+                try:
+                    import yt_dlp
+                    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+                        info = ydl.extract_info(f"https://youtube.com/watch?v={video_id}", download=False)
+                        if info and info.get('title'):
+                            return info['title']
+                except:
+                    pass
+        
+        # Fallback to web scraping
+            try:
+                response = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=10)
+                if response.status_code == 200:
+                    match = re.search(r'"title":"([^"]*)"', response.text)
+                    if match:
+                        return match.group(1).replace(' - YouTube', '').strip()
+            except:
+                pass
+        
+            return f"YouTube Video {video_id}"
+        
+        except Exception:
+            return f"YouTube Video {video_id}"
     
     def _extract_transcript_with_ytdlp(self, video_id: str) -> Optional[str]:
         """Alternative transcript extraction using yt-dlp"""

@@ -14,7 +14,82 @@ from typing import List, Dict, Optional, Any
 import logging
 import sys
 import tempfile
-
+import requests  # Add this if not already present
+import re        # Add this if not already present
+# Add this after the imports and before the main functions
+def enhanced_youtube_validation(url: str) -> Dict[str, Any]:
+    """Enhanced YouTube URL validation with detailed feedback"""
+    
+    validation_result = {
+        'is_valid': False,
+        'video_id': None,
+        'error_message': None,
+        'suggestions': []
+    }
+    
+    if not url.strip():
+        validation_result['error_message'] = "URL is empty"
+        return validation_result
+    
+    # Extract video ID
+    patterns = [
+        r'(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})',
+        r'(?:youtu\.be/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
+        r'^([a-zA-Z0-9_-]{11})$'
+    ]
+    
+    video_id = None
+    for pattern in patterns:
+        match = re.search(pattern, url.strip())
+        if match:
+            potential_id = match.group(1)
+            if len(potential_id) == 11 and re.match(r'^[a-zA-Z0-9_-]+$', potential_id):
+                video_id = potential_id
+                break
+    
+    if not video_id:
+        validation_result['error_message'] = "Could not extract valid video ID"
+        validation_result['suggestions'] = [
+            "Use format: https://youtube.com/watch?v=VIDEO_ID",
+            "Use format: https://youtu.be/VIDEO_ID",
+            "Ensure the video ID is 11 characters long"
+        ]
+        return validation_result
+    
+    validation_result['video_id'] = video_id
+    validation_result['is_valid'] = True
+    
+    # Quick accessibility check
+    try:
+        test_url = f"https://www.youtube.com/watch?v={video_id}"
+        response = requests.get(test_url, timeout=10, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+        if response.status_code == 200:
+            page_content = response.text
+            if 'This video is private' in page_content:
+                validation_result['error_message'] = "Video is private"
+                validation_result['is_valid'] = False
+            elif 'Video unavailable' in page_content:
+                validation_result['error_message'] = "Video is unavailable"
+                validation_result['is_valid'] = False
+            elif 'This video has been removed' in page_content:
+                validation_result['error_message'] = "Video has been deleted"
+                validation_result['is_valid'] = False
+            elif 'Sign in to confirm your age' in page_content:
+                validation_result['error_message'] = "Video is age-restricted"
+                validation_result['is_valid'] = False
+        else:
+            validation_result['error_message'] = f"Video page returned HTTP {response.status_code}"
+            validation_result['is_valid'] = False
+            
+    except Exception as e:
+        validation_result['error_message'] = f"Could not verify video accessibility: {str(e)}"
+        validation_result['is_valid'] = False
+    
+    return validation_result
 # Add the current directory to path to ensure imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -282,7 +357,7 @@ def display_enhanced_sidebar():
             st.info("💡 Add API keys to .env or config.json for enhanced features")
 
 def display_research_input():
-    """Enhanced research input form with URL validation"""
+    """Enhanced research input form with URL validation - FIXED VERSION"""
     st.markdown('<div class="section-header">🔍 Research Configuration</div>', unsafe_allow_html=True)
     
     # Show API capabilities
@@ -311,26 +386,6 @@ def display_research_input():
                 height=100,
                 help="One URL per line - supports various YouTube formats"
             )
-            
-            # URL validation preview
-            if video_urls_text.strip():
-                urls = [url.strip() for url in video_urls_text.split('\n') if url.strip()]
-                valid_urls = []
-                invalid_urls = []
-                
-                for url in urls:
-                    if validate_youtube_url(url):
-                        valid_urls.append(url)
-                    else:
-                        invalid_urls.append(url)
-                
-                if valid_urls:
-                    st.success(f"✅ {len(valid_urls)} valid YouTube URLs")
-                
-                if invalid_urls:
-                    st.error(f"❌ {len(invalid_urls)} invalid URLs:")
-                    for invalid_url in invalid_urls:
-                        st.write(f"  • {invalid_url}")
             
             st.markdown("**📄 Additional Text**")
             text_sources = st.text_area(
@@ -378,35 +433,42 @@ def display_research_input():
             check_file_sizes(uploaded_audio, "Audio")
             check_file_sizes(uploaded_video, "Video")
         
-        # Submit button with validation
+        # SUBMIT BUTTON - THIS MUST BE INSIDE THE FORM
         submitted = st.form_submit_button(
             "🚀 Start Comprehensive Research",
             use_container_width=True,
             type="primary"
         )
         
-        # Validation and preparation
+        # Validation and preparation - ONLY WHEN SUBMITTED
         if submitted:
             if not topic.strip():
                 st.error("❌ Please enter a research topic")
                 return None
             
-            # Validate YouTube URLs
+            # Enhanced YouTube URL validation
             video_urls = []
             if video_urls_text.strip():
                 urls = [url.strip() for url in video_urls_text.split('\n') if url.strip()]
-                for url in urls:
-                    if validate_youtube_url(url):
+                
+                for i, url in enumerate(urls):
+                    validation = enhanced_youtube_validation(url)
+                    if validation['is_valid']:
                         video_urls.append(url)
+                        st.success(f"✅ URL {i+1}: Valid - Video ID: {validation['video_id']}")
                     else:
-                        st.error(f"❌ Invalid YouTube URL: {url}")
+                        st.error(f"❌ URL {i+1}: {validation['error_message']}")
+                        if validation['suggestions']:
+                            st.info("💡 Suggestions:")
+                            for suggestion in validation['suggestions']:
+                                st.write(f"   • {suggestion}")
                         return None
             
             # Count total inputs
             input_count = 1  # topic
             if video_urls:
                 input_count += len(video_urls)
-            if text_sources.strip():
+            if text_sources and text_sources.strip():
                 input_count += 1
             if uploaded_images:
                 input_count += len(uploaded_images)
@@ -421,12 +483,13 @@ def display_research_input():
             return {
                 'topic': topic.strip(),
                 'video_urls': video_urls,
-                'text_sources': text_sources.strip() if text_sources.strip() else None,
+                'text_sources': text_sources.strip() if text_sources and text_sources.strip() else None,
                 'uploaded_images': uploaded_images or [],
                 'uploaded_audio': uploaded_audio or [],
                 'uploaded_videos': uploaded_video or []
             }
     
+    # Form ends here - return None if not submitted
     return None
 
 def save_uploaded_files(uploaded_files: Dict, upload_dir: Path) -> Dict[str, List[str]]:
@@ -544,6 +607,16 @@ async def run_enhanced_research(research_input: Dict[str, Any]) -> tuple:
                     valid_video_urls.append(url)
                 else:
                     st.warning(f"⚠️ Skipping invalid YouTube URL: {url}")
+
+        # Add this right after the video URL processing section
+        if valid_video_urls:
+            st.info(f"🎥 Processing {len(valid_video_urls)} YouTube video(s)...")
+            for i, url in enumerate(valid_video_urls):
+                video_id = url.split('v=')[-1].split('&')[0] if 'v=' in url else url.split('/')[-1].split('?')[0]
+                st.info(f"   📹 Video {i+1}: {video_id}")
+        else:
+            if video_urls_text.strip():
+                st.warning("⚠️ No valid YouTube URLs to process")
         
         # Run research with enhanced error handling
         try:
