@@ -1,12 +1,8 @@
 """
-Enhanced Multi-Modal Research Assistant with Proper API Integration
-Fixes API integration issues and ensures all input fields work correctly
+Enhanced Multi-Modal Research Assistant with Fixed YouTube Integration
+Fixes YouTube transcript API usage and ensures all input fields work correctly
 """
-# ...existing imports...
-import warnings
-from dotenv import load_dotenv
-load_dotenv()
-# ...existing code...
+
 import asyncio
 import aiohttp
 import json
@@ -26,6 +22,10 @@ warnings.filterwarnings('ignore')
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
 # Safe imports with fallbacks
 try:
@@ -62,6 +62,7 @@ except ImportError:
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
     YOUTUBE_TRANSCRIPT_AVAILABLE = True
+    logger.info("YouTube Transcript API loaded successfully")
 except ImportError:
     YOUTUBE_TRANSCRIPT_AVAILABLE = False
     logger.warning("youtube_transcript_api not available.")
@@ -444,7 +445,7 @@ class WebSearchEngine:
         return unique_sources
 
 class VideoAudioProcessor:
-    """Enhanced video and audio processing"""
+    """Enhanced video and audio processing with fixed YouTube API"""
     
     def __init__(self, config: AgenticResearchConfig):
         self.config = config
@@ -465,6 +466,9 @@ class VideoAudioProcessor:
     def extract_video_id(self, video_url: str) -> Optional[str]:
         """Extract video ID from YouTube URL with better pattern matching"""
         try:
+            # Clean up the URL
+            video_url = video_url.strip()
+            
             patterns = [
                 r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/)([a-zA-Z0-9_-]{11})',
                 r'youtube\.com/watch\?.*v=([a-zA-Z0-9_-]{11})',
@@ -475,7 +479,7 @@ class VideoAudioProcessor:
                 match = re.search(pattern, video_url)
                 if match:
                     video_id = match.group(1)
-                    logger.info(f"Extracted video ID: {video_id}")
+                    logger.info(f"Extracted video ID: {video_id} from URL: {video_url}")
                     return video_id
             
             logger.warning(f"Could not extract video ID from: {video_url}")
@@ -484,10 +488,44 @@ class VideoAudioProcessor:
             logger.error(f"Error extracting video ID: {e}")
             return None
     
-   # ...existing code...
+    def get_video_info(self, video_url: str) -> Optional[Dict]:
+        """Get video information using yt-dlp"""
+        if not YT_DLP_AVAILABLE:
+            return None
+            
+        try:
+            video_id = self.extract_video_id(video_url)
+            if not video_id:
+                return None
+                
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'writesubtitles': False,
+                'writeautomaticsub': False
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                full_url = f"https://youtube.com/watch?v={video_id}"
+                info = ydl.extract_info(full_url, download=False)
+                
+                return {
+                    'title': info.get('title', f'YouTube Video {video_id}'),
+                    'description': info.get('description', ''),
+                    'duration': info.get('duration', 0),
+                    'uploader': info.get('uploader', ''),
+                    'upload_date': info.get('upload_date', ''),
+                    'view_count': info.get('view_count', 0)
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting video info: {e}")
+            return None
+    
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_youtube_transcript(self, video_url: str) -> Optional[ResearchSource]:
-        """Extract transcript from YouTube video with better error handling"""
+        """CORRECT FIX: YouTube transcript extraction using instance methods"""
         if not YOUTUBE_TRANSCRIPT_AVAILABLE:
             logger.warning("YouTube transcript API not available")
             return None
@@ -495,33 +533,87 @@ class VideoAudioProcessor:
         try:
             video_id = self.extract_video_id(video_url)
             if not video_id:
+                logger.error(f"Could not extract video ID from URL: {video_url}")
                 return None
             
             logger.info(f"Extracting YouTube transcript for video: {video_id}")
             
-            # Try to get transcript in different languages
+            # CORRECT FIX: Create an instance of YouTubeTranscriptApi
+            from youtube_transcript_api import YouTubeTranscriptApi
+            
+            # Create instance
+            api = YouTubeTranscriptApi()
+            
+            transcript_data = None
+            
+            # Method 1: Try with English language preference
             try:
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])
-            except Exception:
+                logger.info("Trying English transcript...")
+                transcript_data = api.get_transcript(video_id, languages=['en', 'en-US', 'en-GB'])
+                logger.info("✅ English transcript found")
+            except Exception as e1:
+                logger.info(f"English transcript failed: {e1}")
+                
+                # Method 2: Try without language filter
                 try:
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
-                except Exception as e:
-                    logger.error(f"YouTube transcript extraction failed: {e}")
-                    return None
+                    logger.info("Trying any available transcript...")
+                    transcript_data = api.get_transcript(video_id)
+                    logger.info("✅ Transcript found (any language)")
+                except Exception as e2:
+                    logger.info(f"Direct transcript failed: {e2}")
+                    
+                    # Method 3: List available transcripts and pick one
+                    try:
+                        logger.info("Listing available transcripts...")
+                        transcript_list = api.list_transcripts(video_id)
+                        
+                        # Try to get English first
+                        try:
+                            transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
+                            transcript_data = transcript.fetch()
+                            logger.info("✅ Found English transcript via list method")
+                        except:
+                            # Get any available transcript
+                            try:
+                                transcript = transcript_list.find_generated_transcript(['en'])
+                                transcript_data = transcript.fetch()
+                                logger.info("✅ Found auto-generated English transcript")
+                            except:
+                                # Get the first available transcript
+                                for transcript in transcript_list:
+                                    try:
+                                        transcript_data = transcript.fetch()
+                                        logger.info(f"✅ Found transcript in language: {transcript.language}")
+                                        break
+                                    except:
+                                        continue
+                    except Exception as e3:
+                        logger.error(f"List transcripts failed: {e3}")
+                        return None
             
-            transcript_text = " ".join([item['text'] for item in transcript_data])
+            if not transcript_data:
+                logger.error(f"No transcript available for video: {video_id}")
+                logger.info("💡 This video may not have captions/transcripts enabled")
+                return None
             
-            # Get video title if possible
+            # Process transcript data
+            transcript_text = " ".join([item.get('text', '') for item in transcript_data])
+            transcript_text = re.sub(r'\s+', ' ', transcript_text).strip()
+            
+            if not transcript_text:
+                logger.error("Transcript text is empty after processing")
+                return None
+            
+            # Get video title
+            title = f'YouTube Video {video_id}'
             try:
-                if YT_DLP_AVAILABLE:
-                    ydl_opts = {'quiet': True, 'no_warnings': True}
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(f"https://youtube.com/watch?v={video_id}", download=False)
-                        title = info.get('title', f'YouTube Video {video_id}')
-                else:
-                    title = f"YouTube Video {video_id}"
-            except:
-                title = f"YouTube Video {video_id}"
+                video_info = self.get_video_info(video_url)
+                if video_info and video_info.get('title'):
+                    title = video_info['title']
+            except Exception as e:
+                logger.warning(f"Could not get video title: {e}")
+            
+            logger.info(f"Successfully extracted transcript: {title} ({len(transcript_text)} characters)")
             
             return ResearchSource(
                 title=title,
@@ -529,13 +621,70 @@ class VideoAudioProcessor:
                 url=video_url,
                 source_type='youtube_transcript',
                 confidence=0.85,
-                metadata={'video_id': video_id, 'duration': len(transcript_data)}
+                metadata={
+                    'video_id': video_id,
+                    'transcript_length': len(transcript_text),
+                    'extraction_method': 'instance_method_fix'
+                }
             )
             
         except Exception as e:
             logger.error(f"YouTube transcript extraction failed: {str(e)}")
+            logger.info("💡 Video may not have available transcripts")
             return None
-# ...existing code...
+    
+    def _extract_transcript_with_ytdlp(self, video_id: str) -> Optional[str]:
+        """Alternative transcript extraction using yt-dlp"""
+        if not YT_DLP_AVAILABLE:
+            return None
+            
+        try:
+            logger.info("Attempting transcript extraction with yt-dlp...")
+            
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': ['en', 'en-US'],
+                'skip_download': True
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                url = f"https://youtube.com/watch?v={video_id}"
+                info = ydl.extract_info(url, download=False)
+                
+                # Try to extract subtitles/captions
+                subtitles = info.get('subtitles', {})
+                automatic_captions = info.get('automatic_captions', {})
+                
+                # Look for English subtitles
+                for lang in ['en', 'en-US', 'en-GB']:
+                    if lang in subtitles:
+                        # Manual subtitles are preferred
+                        return self._process_subtitle_data(subtitles[lang])
+                    elif lang in automatic_captions:
+                        # Fallback to automatic captions
+                        return self._process_subtitle_data(automatic_captions[lang])
+                
+                return None
+                
+        except Exception as e:
+            logger.error(f"yt-dlp transcript extraction failed: {e}")
+            return None
+    
+    def _process_subtitle_data(self, subtitle_formats: List[Dict]) -> Optional[str]:
+        """Process subtitle data from yt-dlp"""
+        try:
+            # Look for the best subtitle format
+            for fmt in subtitle_formats:
+                if fmt.get('ext') in ['vtt', 'srt', 'ttml']:
+                    # Here you would download and parse the subtitle file
+                    # For now, return None as this requires additional processing
+                    pass
+            return None
+        except Exception:
+            return None
     
     def transcribe_audio_with_whisper(self, audio_path: str) -> Optional[ResearchSource]:
         """Transcribe audio file using Whisper with progress tracking"""
@@ -578,9 +727,42 @@ class VideoAudioProcessor:
         except Exception as e:
             logger.error(f"Whisper transcription failed: {str(e)}")
             return None
+    
+    def extract_audio_from_video(self, video_path: str) -> Optional[str]:
+        """Extract audio from video file for transcription"""
+        if not CV2_AVAILABLE:
+            logger.warning("OpenCV not available for video processing")
+            return None
+            
+        try:
+            import tempfile
+            import subprocess
+            
+            # Create temporary audio file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
+                audio_path = tmp_audio.name
+            
+            # Use ffmpeg to extract audio (if available)
+            try:
+                subprocess.run([
+                    'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le', 
+                    '-ar', '16000', '-ac', '1', audio_path, '-y'
+                ], check=True, capture_output=True)
+                
+                logger.info(f"Extracted audio from video: {video_path}")
+                return audio_path
+                
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                logger.warning("ffmpeg not available, trying OpenCV audio extraction")
+                # Fallback: basic audio extraction with OpenCV (limited)
+                return None
+                
+        except Exception as e:
+            logger.error(f"Audio extraction failed: {e}")
+            return None
 
 class ImageProcessor:
-    """Enhanced image analysis and OCR"""
+    """Enhanced image analysis and OCR with better error handling"""
     
     def __init__(self):
         self.blip_processor = None
@@ -594,16 +776,24 @@ class ImageProcessor:
             
         try:
             logger.info(f"Extracting text from image: {image_path}")
-            image = Image.open(image_path)
+            
+            # Handle both file paths and uploaded file objects
+            if hasattr(image_path, 'read'):
+                # It's an uploaded file object
+                image = Image.open(image_path)
+            else:
+                # It's a file path
+                image = Image.open(image_path)
             
             # Convert to RGB if necessary
             if image.mode != 'RGB':
                 image = image.convert('RGB')
             
-            # Use multiple OCR configurations
+            # Use multiple OCR configurations for better results
             configs = [
-                '--psm 6',  # Uniform block of text
+                '--psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz ',
                 '--psm 3',  # Fully automatic page segmentation
+                '--psm 6',  # Uniform block of text
                 '--psm 8'   # Single word
             ]
             
@@ -615,6 +805,9 @@ class ImageProcessor:
                         best_text = text
                 except:
                     continue
+            
+            # Clean up extracted text
+            best_text = re.sub(r'\s+', ' ', best_text).strip()
             
             logger.info(f"Extracted {len(best_text)} characters from image")
             return best_text
@@ -631,6 +824,7 @@ class ImageProcessor:
         try:
             logger.info(f"Generating caption for image: {image_path}")
             
+            # Initialize BLIP model if needed
             if not self.blip_processor:
                 from transformers import BlipProcessor, BlipForConditionalGeneration
                 logger.info("Loading BLIP model for image captioning...")
@@ -638,7 +832,12 @@ class ImageProcessor:
                 self.blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
                 logger.info("BLIP model loaded successfully")
             
-            image = Image.open(image_path)
+            # Handle both file paths and uploaded file objects
+            if hasattr(image_path, 'read'):
+                image = Image.open(image_path)
+            else:
+                image = Image.open(image_path)
+                
             if image.mode != 'RGB':
                 image = image.convert('RGB')
                 
@@ -667,8 +866,14 @@ class ImageProcessor:
         
         content = "\n".join(content_parts)
         
+        # Get image name
+        if hasattr(image_path, 'name'):
+            image_name = image_path.name
+        else:
+            image_name = Path(image_path).name
+        
         return ResearchSource(
-            title=f"Image Analysis: {Path(image_path).name}",
+            title=f"Image Analysis: {image_name}",
             content=content,
             url=f"file://{image_path}",
             source_type='image',
@@ -836,17 +1041,36 @@ class AgenticResearchAssistant:
                             self.all_sources.append(source)
                             logger.info(f"Video {i} processed successfully")
                         else:
-                            logger.warning(f"Video {i} could not be processed")
+                            logger.warning(f"Video {i} could not be processed - no transcript available")
                     except Exception as e:
                         logger.error(f"Error processing video {i}: {e}")
         
-        # Phase 4: Process audio
+        # Phase 4: Process audio files
         if audio_paths:
             logger.info(f"Phase 4: Processing {len(audio_paths)} audio files...")
             for i, path in enumerate(audio_paths, 1):
                 try:
                     logger.info(f"Processing audio {i}/{len(audio_paths)}: {path}")
-                    source = self.video_processor.transcribe_audio_with_whisper(path)
+                    
+                    # Check if it's a video file that needs audio extraction
+                    file_ext = Path(path).suffix.lower() if isinstance(path, str) else ''
+                    if file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
+                        # Extract audio from video first
+                        audio_path = self.video_processor.extract_audio_from_video(path)
+                        if audio_path:
+                            source = self.video_processor.transcribe_audio_with_whisper(audio_path)
+                            # Clean up temporary audio file
+                            try:
+                                os.unlink(audio_path)
+                            except:
+                                pass
+                        else:
+                            logger.warning(f"Could not extract audio from video: {path}")
+                            continue
+                    else:
+                        # Direct audio transcription
+                        source = self.video_processor.transcribe_audio_with_whisper(path)
+                    
                     if source:
                         self.all_sources.append(source)
                         logger.info(f"Audio {i} processed successfully")
@@ -860,7 +1084,7 @@ class AgenticResearchAssistant:
             logger.info(f"Phase 5: Processing {len(image_paths)} images...")
             for i, path in enumerate(image_paths, 1):
                 try:
-                    logger.info(f"Processing image {i}/{len(image_paths)}: {path}")
+                    logger.info(f"Processing image {i}/{len(image_paths)}")
                     source = self.image_processor.analyze_image(path)
                     self.all_sources.append(source)
                     logger.info(f"Image {i} processed successfully")

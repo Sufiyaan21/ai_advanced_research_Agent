@@ -10,8 +10,8 @@ duckduckgo-search>=4.0.0
 wikipedia-api>=0.5.0
 praw>=7.6.0
 
-# Video/Audio processing (optional but recommended)
-youtube-transcript-api>=0.6.0
+# Video/Audio processing - FIXED VERSIONS
+youtube-transcript-api>=0.6.1
 yt-dlp>=2023.1.6
 
 # AI/ML dependencies (install what's available on your system)
@@ -34,6 +34,10 @@ spacy>=3.5.0
 tenacity>=8.2.0
 numpy>=1.23.0
 pandas>=1.5.0
+
+# Additional dependencies for better error handling
+urllib3>=1.26.0
+certifi>=2022.12.7
 
 # Note: After installing, run:
 # python -m spacy download en_core_web_sm
