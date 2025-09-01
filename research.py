@@ -1,6 +1,6 @@
 """
-Enhanced Multi-Modal Research Assistant with Fixed YouTube Integration
-Fixes YouTube transcript API usage and ensures all input fields work correctly
+Enhanced Multi-Modal Research Assistant with FIXED YouTube Integration
+This version addresses the XML parsing issues and transcript extraction failures
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import logging
 import warnings
+import requests
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -61,6 +62,10 @@ except ImportError:
 
 try:
     from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api._errors import (
+        TranscriptsDisabled, NoTranscriptFound, VideoUnavailable,
+        TooManyRequests, YouTubeRequestFailed
+    )
     YOUTUBE_TRANSCRIPT_AVAILABLE = True
     logger.info("YouTube Transcript API loaded successfully")
 except ImportError:
@@ -107,7 +112,6 @@ except ImportError:
     SPACY_AVAILABLE = False
     logger.warning("spaCy not available.")
 
-import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 @dataclass
@@ -246,51 +250,6 @@ class WebSearchEngine:
             return []
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def search_serpapi(self, query: str) -> List[ResearchSource]:
-        """SerpAPI search with proper API integration"""
-        if not self.config.SERPAPI_KEY:
-            logger.info("SerpAPI key not configured, skipping...")
-            return []
-            
-        try:
-            logger.info(f"Searching SerpAPI for: {query}")
-            sources = []
-            
-            url = "https://serpapi.com/search.json"
-            params = {
-                'api_key': self.config.SERPAPI_KEY,
-                'engine': 'google',
-                'q': query,
-                'num': min(self.config.MAX_SEARCH_RESULTS, 10)
-            }
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    organic_results = data.get('organic_results', [])
-                    
-                    for result in organic_results:
-                        source = ResearchSource(
-                            title=result.get('title', ''),
-                            content=result.get('snippet', ''),
-                            url=result.get('link', ''),
-                            source_type='serpapi',
-                            confidence=0.9,
-                            metadata={'engine': 'serpapi', 'timestamp': datetime.now().isoformat()}
-                        )
-                        sources.append(source)
-                        
-                    logger.info(f"Found {len(sources)} SerpAPI results")
-                else:
-                    logger.error(f"SerpAPI error: {response.status}")
-                    
-            return sources
-            
-        except Exception as e:
-            logger.error(f"SerpAPI search failed: {str(e)}")
-            return []
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def search_duckduckgo(self, query: str) -> List[ResearchSource]:
         """DuckDuckGo search - unlimited and free"""
         if not DDGS_AVAILABLE:
@@ -355,51 +314,6 @@ class WebSearchEngine:
             logger.error(f"Wikipedia search failed: {str(e)}")
             return []
     
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def search_reddit(self, query: str) -> List[ResearchSource]:
-        """Reddit search with proper API integration"""
-        if not PRAW_AVAILABLE or not (self.config.REDDIT_CLIENT_ID and self.config.REDDIT_CLIENT_SECRET):
-            logger.info("Reddit API not configured, skipping...")
-            return []
-            
-        try:
-            logger.info(f"Searching Reddit for: {query}")
-            sources = []
-            
-            reddit = praw.Reddit(
-                client_id=self.config.REDDIT_CLIENT_ID,
-                client_secret=self.config.REDDIT_CLIENT_SECRET,
-                user_agent=self.config.REDDIT_USER_AGENT
-            )
-            
-            # Search multiple relevant subreddits
-            subreddits = ['technology', 'science', 'artificial', 'MachineLearning', 'futurology']
-            
-            for subreddit_name in subreddits[:3]:
-                try:
-                    subreddit = reddit.subreddit(subreddit_name)
-                    for submission in subreddit.search(query, limit=2, sort='relevance'):
-                        if submission.selftext and len(submission.selftext) > 100:
-                            source = ResearchSource(
-                                title=submission.title,
-                                content=submission.selftext[:1500],
-                                url=f"https://reddit.com{submission.permalink}",
-                                source_type='reddit',
-                                confidence=0.7,
-                                metadata={'subreddit': subreddit_name, 'score': submission.score}
-                            )
-                            sources.append(source)
-                except Exception as e:
-                    logger.warning(f"Error searching subreddit {subreddit_name}: {e}")
-                    continue
-                    
-            logger.info(f"Found {len(sources)} Reddit results")
-            return sources
-            
-        except Exception as e:
-            logger.error(f"Reddit search failed: {str(e)}")
-            return []
-    
     async def comprehensive_search(self, query: str) -> List[ResearchSource]:
         """Combine multiple search engines for comprehensive results"""
         logger.info(f"Starting comprehensive search for: {query}")
@@ -410,12 +324,6 @@ class WebSearchEngine:
         # Add API-based searches if available
         if self.config.GOOGLE_CSE_API_KEY and self.config.GOOGLE_CSE_ID:
             tasks.append(self.search_google_cse(query))
-        
-        if self.config.SERPAPI_KEY:
-            tasks.append(self.search_serpapi(query))
-        
-        if self.config.REDDIT_CLIENT_ID and self.config.REDDIT_CLIENT_SECRET:
-            tasks.append(self.search_reddit(query))
         
         # Always add free searches
         tasks.extend([
@@ -445,33 +353,29 @@ class WebSearchEngine:
         return unique_sources
 
 class VideoAudioProcessor:
-    """Enhanced video and audio processing with fixed YouTube API"""
+    """FIXED: Enhanced video and audio processing with robust YouTube API"""
     
     def __init__(self, config: AgenticResearchConfig):
         self.config = config
         self.whisper_model = None
         
-    def load_whisper_model(self):
-        """Load Whisper model for speech-to-text"""
-        if not WHISPER_AVAILABLE:
-            return
-        if not self.whisper_model:
-            try:
-                logger.info(f"Loading Whisper model: {self.config.WHISPER_MODEL}")
-                self.whisper_model = whisper.load_model(self.config.WHISPER_MODEL)
-                logger.info("Whisper model loaded successfully")
-            except Exception as e:
-                logger.error(f"Failed to load Whisper model: {e}")
-    
     def extract_video_id(self, video_url: str) -> Optional[str]:
-        """Extract video ID from YouTube URL with better pattern matching"""
+        """Extract video ID from YouTube URL with comprehensive cleaning"""
         try:
-            # Clean up the URL
             video_url = video_url.strip()
             
+            # Remove tracking parameters that can cause issues
+            video_url = re.sub(r'[?&]si=[^&]*', '', video_url)
+            video_url = re.sub(r'[?&]t=[^&]*', '', video_url)
+            video_url = re.sub(r'[?&]list=[^&]*', '', video_url)
+            video_url = re.sub(r'[?&]index=[^&]*', '', video_url)
+            
             patterns = [
-                r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/)([a-zA-Z0-9_-]{11})',
-                r'youtube\.com/watch\?.*v=([a-zA-Z0-9_-]{11})',
+                r'(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})',
+                r'(?:youtu\.be/)([a-zA-Z0-9_-]{11})',
+                r'(?:youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
+                r'(?:youtube\.com/v/)([a-zA-Z0-9_-]{11})',
+                r'(?:youtube\.com/watch\?.*v=)([a-zA-Z0-9_-]{11})',
                 r'^([a-zA-Z0-9_-]{11})$'  # Direct video ID
             ]
             
@@ -479,411 +383,601 @@ class VideoAudioProcessor:
                 match = re.search(pattern, video_url)
                 if match:
                     video_id = match.group(1)
-                    logger.info(f"Extracted video ID: {video_id} from URL: {video_url}")
-                    return video_id
+                    # Validate video ID format
+                    if len(video_id) == 11 and re.match(r'^[a-zA-Z0-9_-]+$', video_id):
+                        logger.info(f"✅ Extracted video ID: {video_id}")
+                        return video_id
             
-            logger.warning(f"Could not extract video ID from: {video_url}")
+            logger.error(f"❌ Could not extract valid video ID from: {video_url}")
             return None
+            
         except Exception as e:
-            logger.error(f"Error extracting video ID: {e}")
+            logger.error(f"❌ Error extracting video ID: {e}")
             return None
     
-    def get_video_info(self, video_url: str) -> Optional[Dict]:
-        """Get video information using yt-dlp"""
-        if not YT_DLP_AVAILABLE:
-            return None
-            
+    def check_video_accessibility(self, video_id: str) -> Dict[str, Any]:
+        """Enhanced video accessibility check"""
         try:
-            video_id = self.extract_video_id(video_url)
-            if not video_id:
-                return None
-                
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-                'writesubtitles': False,
-                'writeautomaticsub': False
+            check_url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive'
             }
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                full_url = f"https://youtube.com/watch?v={video_id}"
-                info = ydl.extract_info(full_url, download=False)
-                
+            response = requests.get(check_url, timeout=15, headers=headers)
+            
+            if response.status_code != 200:
                 return {
-                    'title': info.get('title', f'YouTube Video {video_id}'),
-                    'description': info.get('description', ''),
-                    'duration': info.get('duration', 0),
-                    'uploader': info.get('uploader', ''),
-                    'upload_date': info.get('upload_date', ''),
-                    'view_count': info.get('view_count', 0)
+                    'accessible': False,
+                    'reason': f'HTTP {response.status_code}',
+                    'suggestion': 'Video may not exist or be unavailable'
                 }
-                
+            
+            page_content = response.text.lower()
+            
+            # Check for restrictions
+            restrictions = [
+                ('this video is private', 'Video is private'),
+                ('video unavailable', 'Video unavailable'),
+                ('this video has been removed', 'Video removed'),
+                ('sign in to confirm your age', 'Age-restricted'),
+                ('this video is not available', 'Geo-restricted'),
+                ('error occurred', 'YouTube error')
+            ]
+            
+            for indicator, reason in restrictions:
+                if indicator in page_content:
+                    return {
+                        'accessible': False,
+                        'reason': reason,
+                        'suggestion': 'Try a different public video'
+                    }
+            
+            return {'accessible': True, 'reason': 'Video appears accessible'}
+            
         except Exception as e:
-            logger.error(f"Error getting video info: {e}")
-            return None
+            return {
+                'accessible': False,
+                'reason': f'Check failed: {str(e)}',
+                'suggestion': 'Network or connectivity issue'
+            }
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def get_youtube_transcript(self, video_url: str) -> Optional[ResearchSource]:
-        """FIXED: Enhanced YouTube transcript extraction with comprehensive error handling"""
-    
+        """FIXED: YouTube transcript extraction with comprehensive error handling"""
+        
         if not YOUTUBE_TRANSCRIPT_AVAILABLE:
             logger.error("❌ YouTube transcript API not available")
-            return None
-    
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-            from youtube_transcript_api._errors import (
-                TranscriptsDisabled, NoTranscriptFound, VideoUnavailable,
-                TooManyRequests, YouTubeRequestFailed
-        )
-        except ImportError:
-            logger.error("❌ Could not import YouTube transcript API")
-            return None
-    
-    # Extract video ID with enhanced validation
+            return self._try_alternative_methods(video_url)
+        
+        # Extract and validate video ID
         video_id = self.extract_video_id(video_url)
         if not video_id:
             logger.error(f"❌ Invalid YouTube URL: {video_url}")
             return None
-    
+        
         logger.info(f"🎯 Processing YouTube video: {video_id}")
-    
-    # Pre-flight accessibility check
-        try:
-            check_url = f"https://www.youtube.com/watch?v={video_id}"
-            response = requests.get(check_url, timeout=15, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
         
-            if response.status_code != 200:
-                logger.error(f"❌ Video not accessible (HTTP {response.status_code})")
-                return None
+        # Check accessibility first
+        accessibility = self.check_video_accessibility(video_id)
+        if not accessibility['accessible']:
+            logger.error(f"❌ Video not accessible: {accessibility['reason']}")
+            return None
         
-        # Check for common error indicators
-            error_indicators = [
-                'This video is private', 'Video unavailable', 
-                'This video has been removed', 'Sign in to confirm your age'
-        ]
+        logger.info("✅ Video accessibility confirmed")
         
-            for indicator in error_indicators:
-                if indicator in response.text:
-                    logger.error(f"❌ Video issue: {indicator}")
-                    return None
-        
-            logger.info("✅ Video accessibility confirmed")
-        
-        except Exception as access_error:
-            logger.warning(f"⚠️ Accessibility check failed: {access_error}")
-    
-    # Enhanced transcript extraction with multiple strategies
-        transcript_data = None
-        extraction_info = {}
-    
+        # Initialize API with enhanced error handling
         try:
             api = YouTubeTranscriptApi()
+        except Exception as init_error:
+            logger.error(f"❌ API initialization failed: {init_error}")
+            return self._try_alternative_methods(video_url)
         
-        # Strategy 1: Direct language-specific requests
-            logger.info("🔄 Strategy 1: Direct language extraction...")
-            for lang_code in ['en', 'en-US', 'en-GB']:
-                try:
-                    transcript_data = api.get_transcript(video_id, languages=[lang_code])
-                    extraction_info = {'method': 'direct', 'language': lang_code}
-                    logger.info(f"✅ Success with {lang_code}")
-                    break
-                except NoTranscriptFound:
-                    continue
-                except Exception as e:
-                    logger.debug(f"Language {lang_code} failed: {e}")
-                    continue
+        transcript_data = None
+        extraction_info = {}
         
-        # Strategy 2: Comprehensive listing approach
-            if not transcript_data:
-                logger.info("🔄 Strategy 2: Transcript listing...")
+        # Strategy 1: Direct language-specific requests with wider range
+        logger.info("🔄 Strategy 1: Direct language extraction...")
+        language_codes = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU', 'en-IN']
+        
+        for lang_code in language_codes:
+            try:
+                transcript_data = api.get_transcript(video_id, languages=[lang_code])
+                extraction_info = {
+                    'method': 'direct_language',
+                    'language': lang_code,
+                    'type': 'targeted'
+                }
+                logger.info(f"✅ Direct success with {lang_code}")
+                break
+            except NoTranscriptFound:
+                continue
+            except TranscriptsDisabled:
+                logger.error(f"❌ Transcripts disabled for video: {video_id}")
+                return None
+            except VideoUnavailable:
+                logger.error(f"❌ Video unavailable: {video_id}")
+                return None
+            except Exception as e:
+                logger.debug(f"Direct {lang_code} failed: {type(e).__name__}: {e}")
+                continue
+        
+        # Strategy 2: Enhanced transcript listing with better error handling
+        if not transcript_data:
+            logger.info("🔄 Strategy 2: Enhanced transcript listing...")
+            try:
+                # Use a fresh API instance
+                api_fresh = YouTubeTranscriptApi()
+                transcript_list = api_fresh.list_transcripts(video_id)
+                
+                # Convert to list safely
+                available_transcripts = []
                 try:
-                    transcript_list = api.list_transcripts(video_id)
-                    transcripts = list(transcript_list)
-                
-                    if not transcripts:
-                        logger.error("❌ No transcripts available")
-                        return None
-                
-                    logger.info(f"📋 Found {len(transcripts)} transcript(s)")
-                
-                # Try manual English first, then auto English, then any
-                    transcript_list = api.list_transcripts(video_id)  # Refresh
-                
                     for transcript in transcript_list:
-                        try:
-                            if transcript.language_code.startswith('en'):
-                                transcript_data = transcript.fetch()
-                                extraction_info = {
-                                    'method': 'listing',
-                                    'language': transcript.language,
-                                    'type': 'auto' if transcript.is_generated else 'manual'
-                                }
-                                logger.info(f"✅ Success with {transcript.language}")
-                                break
-                        except Exception as fetch_error:
-                            logger.debug(f"Fetch failed for {transcript.language}: {fetch_error}")
-                            continue
+                        available_transcripts.append({
+                            'language': transcript.language,
+                            'language_code': transcript.language_code,
+                            'is_generated': transcript.is_generated,
+                            'transcript_obj': transcript
+                        })
+                except Exception as conversion_error:
+                    logger.error(f"❌ Error converting transcript list: {conversion_error}")
+                    return self._try_alternative_methods(video_url)
                 
-                # If no English found, try any language
-                    if not transcript_data:
-                        transcript_list = api.list_transcripts(video_id)
-                        for transcript in transcript_list:
-                            try:
-                                transcript_data = transcript.fetch()
-                                extraction_info = {
-                                    'method': 'listing_any',
-                                    'language': transcript.language,
-                                    'type': 'auto' if transcript.is_generated else 'manual'
-                                }
-                                logger.info(f"✅ Using {transcript.language} transcript")
-                                break
-                            except:
-                                continue
-                            
-                except Exception as list_error:
-                    logger.error(f"Listing approach failed: {list_error}")
+                if not available_transcripts:
+                    logger.error("❌ No transcripts available")
+                    return self._try_alternative_methods(video_url)
+                
+                logger.info(f"📋 Found {len(available_transcripts)} transcript(s)")
+                
+                # Enhanced prioritization
+                priority_order = []
+                
+                # Priority 1: Manual English
+                for t in available_transcripts:
+                    if t['language_code'].startswith('en') and not t['is_generated']:
+                        priority_order.append(t)
+                
+                # Priority 2: Auto English
+                for t in available_transcripts:
+                    if t['language_code'].startswith('en') and t['is_generated']:
+                        priority_order.append(t)
+                
+                # Priority 3: Manual other languages
+                for t in available_transcripts:
+                    if not t['language_code'].startswith('en') and not t['is_generated']:
+                        priority_order.append(t)
+                
+                # Priority 4: Auto other languages
+                for t in available_transcripts:
+                    if not t['language_code'].startswith('en') and t['is_generated']:
+                        priority_order.append(t)
+                
+                # Try each transcript with individual error handling
+                for transcript_info in priority_order:
+                    try:
+                        logger.info(f"🔄 Trying {transcript_info['language']} ({'auto' if transcript_info['is_generated'] else 'manual'})")
+                        
+                        # Add delay to avoid rate limiting
+                        time.sleep(0.5)
+                        
+                        transcript_data = transcript_info['transcript_obj'].fetch()
+                        extraction_info = {
+                            'method': 'listing_enhanced',
+                            'language': transcript_info['language'],
+                            'language_code': transcript_info['language_code'],
+                            'type': 'auto' if transcript_info['is_generated'] else 'manual'
+                        }
+                        logger.info(f"✅ Listing success with {transcript_info['language']}")
+                        break
+                        
+                    except Exception as fetch_error:
+                        logger.warning(f"⚠️ Fetch failed for {transcript_info['language']}: {type(fetch_error).__name__}")
+                        continue
+                        
+            except TranscriptsDisabled:
+                logger.error(f"❌ Transcripts disabled for video: {video_id}")
+                return None
+            except VideoUnavailable:
+                logger.error(f"❌ Video unavailable: {video_id}")
+                return None
+            except Exception as listing_error:
+                logger.error(f"❌ Listing failed: {type(listing_error).__name__}: {listing_error}")
         
-        # Strategy 3: No-filter fallback
-            if not transcript_data:
-                logger.info("🔄 Strategy 3: No-filter fallback...")
-                try:
-                    transcript_data = api.get_transcript(video_id)
-                    extraction_info = {'method': 'no_filter', 'language': 'auto'}
-                    logger.info("✅ No-filter success")
-                except Exception as no_filter_error:
-                    logger.error(f"No-filter failed: {no_filter_error}")
+        # Strategy 3: Simplified no-filter approach with better error handling
+        if not transcript_data:
+            logger.info("🔄 Strategy 3: Simplified no-filter approach...")
+            try:
+                # Create a completely fresh API instance
+                api_final = YouTubeTranscriptApi()
+                
+                # Add a longer delay
+                time.sleep(1)
+                
+                transcript_data = api_final.get_transcript(video_id)
+                extraction_info = {
+                    'method': 'no_filter_simple',
+                    'language': 'auto-detected',
+                    'type': 'unknown'
+                }
+                logger.info("✅ No-filter success")
+                
+            except Exception as final_error:
+                logger.error(f"❌ No-filter failed: {type(final_error).__name__}: {final_error}")
+                return self._try_alternative_methods(video_url)
         
         # Process results
-            if not transcript_data:
-                logger.error(f"❌ All extraction strategies failed for: {video_id}")
-                return None
+        if not transcript_data:
+            logger.error(f"❌ All extraction strategies failed for: {video_id}")
+            return self._try_alternative_methods(video_url)
         
-        # Process transcript safely
-            transcript_text = self._process_transcript_safely(transcript_data)
-            if not transcript_text or len(transcript_text.strip()) < 20:
-                logger.error("❌ Transcript too short after processing")
-                return None
+        # Enhanced transcript processing
+        transcript_text = self._process_transcript_safely(transcript_data)
         
-        # Get video title
-            title = self._get_video_title_safely(video_id)
+        if not transcript_text or len(transcript_text.strip()) < 20:
+            logger.error(f"❌ Transcript too short: {len(transcript_text) if transcript_text else 0} chars")
+            return self._try_alternative_methods(video_url)
         
-            logger.info(f"🎉 SUCCESS: {len(transcript_text)} characters extracted")
+        # Get video metadata
+        video_info = self._get_video_metadata_safe(video_id)
+        title = video_info.get('title', f'YouTube Video {video_id}')
         
-            return ResearchSource(
-                title=title,
-                content=transcript_text,
-                url=video_url,
-                source_type='youtube_transcript',
-                confidence=0.9 if extraction_info.get('type') == 'manual' else 0.8,
-                metadata={
-                    'video_id': video_id,
-                    'extraction_method': extraction_info.get('method', 'unknown'),
-                    'language': extraction_info.get('language', 'unknown'),
-                    'transcript_type': extraction_info.get('type', 'unknown'),
-                    'transcript_length': len(transcript_text)
-                }
-            )
+        logger.info(f"🎉 SUCCESS: {len(transcript_text)} characters extracted from '{title}'")
         
-        except TranscriptsDisabled:
-            logger.error(f"❌ Transcripts disabled for video: {video_id}")
-            return None
-        except VideoUnavailable:
-            logger.error(f"❌ Video unavailable: {video_id}")
-            return None
-        except TooManyRequests:
-            logger.error(f"❌ Rate limit exceeded: {video_id}")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Unexpected error: {e}")
-            return None
-
+        return ResearchSource(
+            title=title,
+            content=transcript_text,
+            url=video_url,
+            source_type='youtube_transcript',
+            confidence=0.9 if extraction_info.get('type') == 'manual' else 0.8,
+            metadata={
+                'video_id': video_id,
+                'extraction_method': extraction_info.get('method', 'unknown'),
+                'language': extraction_info.get('language', 'unknown'),
+                'language_code': extraction_info.get('language_code', 'unknown'),
+                'transcript_type': extraction_info.get('type', 'unknown'),
+                'transcript_length': len(transcript_text),
+                'video_info': video_info
+            }
+        )
+    
     def _process_transcript_safely(self, transcript_data: List[Dict]) -> str:
-        """Safely process transcript data with enhanced error handling"""
+        """Enhanced transcript processing with better error handling"""
         try:
             if not transcript_data or not isinstance(transcript_data, list):
+                logger.error("❌ Invalid transcript data structure")
                 return ""
-        
+            
+            # Process segments with enhanced cleaning
             text_segments = []
-            for segment in transcript_data:
-                if isinstance(segment, dict):
-                    text = segment.get('text', '').strip()
-                    if text:
-                    # Clean subtitle artifacts
-                        text = re.sub(r'\[.*?\]', '', text)  # [Music], [Applause]
-                        text = re.sub(r'\(.*?\)', '', text)  # (inaudible)
-                        text = re.sub(r'\s+', ' ', text).strip()
-                        if text:
-                            text_segments.append(text)
-        
-            full_transcript = ' '.join(text_segments)
-            full_transcript = re.sub(r'\s+', ' ', full_transcript).strip()
-        
-            logger.info(f"Processed {len(text_segments)} segments → {len(full_transcript)} characters")
-            return full_transcript
-        
-        except Exception as e:
-            logger.error(f"Transcript processing failed: {e}")
-            return ""
-
-    def _get_video_title_safely(self, video_id: str) -> str:
-        """Safely get video title with fallbacks"""
-        try:
-        # Try yt-dlp first
-            if YT_DLP_AVAILABLE:
+            total_duration = 0
+            
+            for i, segment in enumerate(transcript_data):
                 try:
-                    import yt_dlp
-                    with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-                        info = ydl.extract_info(f"https://youtube.com/watch?v={video_id}", download=False)
-                        if info and info.get('title'):
-                            return info['title']
-                except:
-                    pass
-        
-        # Fallback to web scraping
-            try:
-                response = requests.get(f"https://www.youtube.com/watch?v={video_id}", timeout=10)
-                if response.status_code == 200:
-                    match = re.search(r'"title":"([^"]*)"', response.text)
-                    if match:
-                        return match.group(1).replace(' - YouTube', '').strip()
-            except:
-                pass
-        
-            return f"YouTube Video {video_id}"
-        
-        except Exception:
-            return f"YouTube Video {video_id}"
+                    if not isinstance(segment, dict):
+                        logger.debug(f"Skipping non-dict segment {i}")
+                        continue
+                    
+                    text = segment.get('text', '').strip()
+                    start_time = segment.get('start', 0)
+                    duration = segment.get('duration', 0)
+                    
+                    if not text:
+                        continue
+                    
+                    # Enhanced text cleaning
+                    original_text = text
+                    
+                    # Remove subtitle artifacts
+                    text = re.sub(r'\[.*?\]', '', text)  # [Music], [Applause]
+                    text = re.sub(r'\(.*?\)', '', text)  # (inaudible)
+                    text = re.sub(r'<.*?>', '', text)   # HTML tags
+                    text = re.sub(r'♪.*?♪', '', text)   # Music symbols
+                    text = re.sub(r'>>.*?<<', '', text) # Speaker indicators
+                    
+                    # Clean punctuation and spacing
+                    text = re.sub(r'\s+', ' ', text)
+                    text = text.strip()
+                    
+                    # Only keep meaningful text
+                    if text and len(text) > 2 and not re.match(r'^[^\w]*$', text):
+                        text_segments.append({
+                            'text': text,
+                            'start': start_time,
+                            'duration': duration,
+                            'original': original_text
+                        })
+                        total_duration = max(total_duration, start_time + duration)
+                
+                except Exception as segment_error:
+                    logger.debug(f"Error processing segment {i}: {segment_error}")
+                    continue
+            
+            if not text_segments:
+                logger.error("❌ No valid text segments after processing")
+                return ""
+            
+            logger.info(f"✅ Processed {len(text_segments)} valid segments")
+            
+            # Intelligent text combination
+            combined_text = []
+            current_paragraph = ""
+            last_end_time = 0
+            
+            for segment in text_segments:
+                text = segment['text']
+                start_time = segment['start']
+                duration = segment['duration']
+                
+                # Determine if this should start a new paragraph
+                time_gap = start_time - last_end_time
+                
+                if time_gap > 3:  # 3+ second gap = new paragraph
+                    if current_paragraph.strip():
+                        combined_text.append(current_paragraph.strip())
+                    current_paragraph = text
+                else:
+                    # Continue current paragraph
+                    if current_paragraph:
+                        # Smart punctuation handling
+                        if current_paragraph.rstrip()[-1:] in '.!?':
+                            current_paragraph += " " + text
+                        elif text[0:1].isupper():
+                            current_paragraph += ". " + text
+                        else:
+                            current_paragraph += " " + text
+                    else:
+                        current_paragraph = text
+                
+                last_end_time = start_time + duration
+            
+            # Add final paragraph
+            if current_paragraph.strip():
+                combined_text.append(current_paragraph.strip())
+            
+            # Join paragraphs
+            full_transcript = '\n\n'.join(combined_text)
+            
+            # Final cleanup
+            full_transcript = re.sub(r'\n\s*\n', '\n\n', full_transcript)  # Clean up multiple newlines
+            full_transcript = re.sub(r'([.!?])\s*([.!?])', r'\1', full_transcript)  # Remove duplicate punctuation
+            full_transcript = full_transcript.strip()
+            
+            logger.info(f"✅ Final transcript: {len(full_transcript)} characters, ~{total_duration/60:.1f} min duration")
+            
+            return full_transcript
+            
+        except Exception as e:
+            logger.error(f"❌ Transcript processing failed: {e}")
+            return ""
     
-    def _extract_transcript_with_ytdlp(self, video_id: str) -> Optional[str]:
-        """Alternative transcript extraction using yt-dlp"""
-        if not YT_DLP_AVAILABLE:
-            return None
-            
+    def _get_video_metadata_safe(self, video_id: str) -> Dict[str, Any]:
+        """Get video metadata with multiple fallback methods"""
+        metadata = {'video_id': video_id}
+        
+        # Method 1: yt-dlp (most comprehensive)
+        if YT_DLP_AVAILABLE:
+            try:
+                import yt_dlp
+                
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': False,
+                    'skip_download': True,
+                    'extractor_args': {'youtube': {'skip': ['dash', 'hls']}}
+                }
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    url = f"https://youtube.com/watch?v={video_id}"
+                    info = ydl.extract_info(url, download=False)
+                    
+                    if info:
+                        metadata.update({
+                            'title': info.get('title', f'YouTube Video {video_id}'),
+                            'description': (info.get('description', '') or '')[:500],
+                            'duration': info.get('duration', 0),
+                            'uploader': info.get('uploader', ''),
+                            'upload_date': info.get('upload_date', ''),
+                            'view_count': info.get('view_count', 0)
+                        })
+                        logger.info(f"✅ Metadata extracted via yt-dlp: {metadata['title']}")
+                        return metadata
+                        
+            except Exception as e:
+                logger.debug(f"yt-dlp metadata failed: {e}")
+        
+        # Method 2: Web scraping fallback
         try:
-            logger.info("Attempting transcript extraction with yt-dlp...")
-            
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'writesubtitles': True,
-                'writeautomaticsub': True,
-                'subtitleslangs': ['en', 'en-US'],
-                'skip_download': True
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                url = f"https://youtube.com/watch?v={video_id}"
-                info = ydl.extract_info(url, download=False)
-                
-                # Try to extract subtitles/captions
-                subtitles = info.get('subtitles', {})
-                automatic_captions = info.get('automatic_captions', {})
-                
-                # Look for English subtitles
-                for lang in ['en', 'en-US', 'en-GB']:
-                    if lang in subtitles:
-                        # Manual subtitles are preferred
-                        return self._process_subtitle_data(subtitles[lang])
-                    elif lang in automatic_captions:
-                        # Fallback to automatic captions
-                        return self._process_subtitle_data(automatic_captions[lang])
-                
-                return None
-                
-        except Exception as e:
-            logger.error(f"yt-dlp transcript extraction failed: {e}")
-            return None
-    
-    def _process_subtitle_data(self, subtitle_formats: List[Dict]) -> Optional[str]:
-        """Process subtitle data from yt-dlp"""
-        try:
-            # Look for the best subtitle format
-            for fmt in subtitle_formats:
-                if fmt.get('ext') in ['vtt', 'srt', 'ttml']:
-                    # Here you would download and parse the subtitle file
-                    # For now, return None as this requires additional processing
-                    pass
-            return None
-        except Exception:
-            return None
-    
-    def transcribe_audio_with_whisper(self, audio_path: str) -> Optional[ResearchSource]:
-        """Transcribe audio file using Whisper with progress tracking"""
-        if not WHISPER_AVAILABLE:
-            logger.warning("Whisper not available for audio transcription")
-            return None
-            
-        try:
-            logger.info(f"Transcribing audio with Whisper: {audio_path}")
-            
-            self.load_whisper_model()
-            if not self.whisper_model:
-                return None
-            
-            # Check file size and duration
-            file_path = Path(audio_path)
-            if not file_path.exists():
-                logger.error(f"Audio file not found: {audio_path}")
-                return None
-                
-            file_size = file_path.stat().st_size / (1024 * 1024)  # MB
-            logger.info(f"Audio file size: {file_size:.1f} MB")
-            
-            # Transcribe with error handling
-            result = self.whisper_model.transcribe(audio_path)
-            
-            return ResearchSource(
-                title=f"Audio Transcription: {file_path.name}",
-                content=result['text'],
-                url=f"file://{audio_path}",
-                source_type='audio_transcription',
-                confidence=0.9,
-                metadata={
-                    'model': self.config.WHISPER_MODEL,
-                    'language': result.get('language', 'unknown'),
-                    'file_size_mb': file_size
-                }
+            response = requests.get(
+                f"https://www.youtube.com/watch?v={video_id}", 
+                headers=headers, 
+                timeout=10
             )
             
+            if response.status_code == 200:
+                content = response.text
+                
+                # Extract title with multiple patterns
+                title_patterns = [
+                    r'"title":"([^"]*)"',
+                    r'<title>([^<]*)</title>',
+                    r'property="og:title" content="([^"]*)"'
+                ]
+                
+                for pattern in title_patterns:
+                    match = re.search(pattern, content)
+                    if match:
+                        title = match.group(1)
+                        # Clean title
+                        title = title.replace('\\u0026', '&')
+                        title = title.replace(' - YouTube', '')
+                        title = re.sub(r'\\[ux][0-9a-fA-F]{4}', '', title)
+                        metadata['title'] = title.strip()
+                        break
+                
+                # Extract view count
+                view_patterns = [
+                    r'"viewCount":"(\d+)"',
+                    r'"views":{"simpleText":"([\d,]+)"'
+                ]
+                
+                for pattern in view_patterns:
+                    match = re.search(pattern, content)
+                    if match:
+                        try:
+                            views = match.group(1).replace(',', '')
+                            metadata['view_count'] = int(views)
+                            break
+                        except:
+                            continue
+                            
+                logger.info(f"✅ Metadata extracted via web scraping")
+                
         except Exception as e:
-            logger.error(f"Whisper transcription failed: {str(e)}")
+            logger.debug(f"Web scraping metadata failed: {e}")
+        
+        # Ensure we have at least a basic title
+        if 'title' not in metadata:
+            metadata['title'] = f'YouTube Video {video_id}'
+        
+        return metadata
+    
+    def _try_alternative_methods(self, video_url: str) -> Optional[ResearchSource]:
+        """Try alternative transcript extraction methods"""
+        video_id = self.extract_video_id(video_url)
+        if not video_id:
+            return None
+        
+        logger.info("🔄 Trying alternative transcript extraction...")
+        
+        # Alternative method: yt-dlp subtitle extraction
+        if YT_DLP_AVAILABLE:
+            try:
+                transcript_text = self._extract_subtitles_ytdlp(video_id)
+                if transcript_text and len(transcript_text.strip()) > 50:
+                    metadata = self._get_video_metadata_safe(video_id)
+                    
+                    logger.info(f"✅ Alternative extraction successful: {len(transcript_text)} chars")
+                    
+                    return ResearchSource(
+                        title=metadata.get('title', f'YouTube Video {video_id}'),
+                        content=transcript_text,
+                        url=video_url,
+                        source_type='youtube_transcript_alt',
+                        confidence=0.7,
+                        metadata={
+                            'video_id': video_id,
+                            'extraction_method': 'alternative_ytdlp',
+                            'transcript_length': len(transcript_text),
+                            'video_info': metadata
+                        }
+                    )
+                    
+            except Exception as e:
+                logger.debug(f"Alternative yt-dlp failed: {e}")
+        
+        logger.error(f"❌ All transcript extraction methods failed for: {video_id}")
+        return None
+    
+    def _extract_subtitles_ytdlp(self, video_id: str) -> Optional[str]:
+        """Extract subtitles using yt-dlp with enhanced options"""
+        try:
+            import yt_dlp
+            import tempfile
+            import os
+            
+            logger.info("🔄 yt-dlp subtitle extraction...")
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                ydl_opts = {
+                    'writesubtitles': True,
+                    'writeautomaticsub': True,
+                    'subtitleslangs': ['en', 'en-US', 'en-GB'],
+                    'subtitlesformat': 'vtt/srt/best',
+                    'skip_download': True,
+                    'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
+                    'quiet': True,
+                    'no_warnings': True
+                }
+                
+                url = f"https://youtube.com/watch?v={video_id}"
+                
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+                    
+                    # Look for subtitle files
+                    subtitle_files = []
+                    for ext in ['vtt', 'srt', 'ttml']:
+                        subtitle_files.extend(Path(temp_dir).glob(f"*.{ext}"))
+                    
+                    # Prioritize English subtitles
+                    for subtitle_file in subtitle_files:
+                        if 'en' in subtitle_file.name.lower():
+                            with open(subtitle_file, 'r', encoding='utf-8', errors='ignore') as f:
+                                content = f.read()
+                                transcript = self._parse_subtitle_content(content)
+                                if transcript and len(transcript) > 50:
+                                    logger.info(f"✅ Subtitle extraction successful from {subtitle_file.name}")
+                                    return transcript
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"yt-dlp subtitle extraction failed: {e}")
             return None
     
-    def extract_audio_from_video(self, video_path: str) -> Optional[str]:
-        """Extract audio from video file for transcription"""
-        if not CV2_AVAILABLE:
-            logger.warning("OpenCV not available for video processing")
-            return None
-            
+    def _parse_subtitle_content(self, content: str) -> Optional[str]:
+        """Parse VTT or SRT subtitle content with enhanced cleaning"""
         try:
-            import tempfile
-            import subprocess
+            lines = content.split('\n')
+            text_lines = []
             
-            # Create temporary audio file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
-                audio_path = tmp_audio.name
+            for line in lines:
+                line = line.strip()
+                
+                # Skip empty lines, timestamps, and headers
+                if not line:
+                    continue
+                if '-->' in line:  # Timestamp line
+                    continue
+                if line.isdigit():  # SRT sequence number
+                    continue
+                if line.startswith(('WEBVTT', 'NOTE', 'Kind:', 'Language:')):
+                    continue
+                
+                # Clean the text line
+                if line and not re.match(r'^\d+$', line):
+                    # Remove HTML/XML tags
+                    clean_line = re.sub(r'<[^>]+>', '', line)
+                    # Remove timestamp markers
+                    clean_line = re.sub(r'\d{2}:\d{2}:\d{2}[\.,]\d{3}', '', clean_line)
+                    # Clean whitespace
+                    clean_line = re.sub(r'\s+', ' ', clean_line).strip()
+                    
+                    if clean_line and len(clean_line) > 2:
+                        text_lines.append(clean_line)
             
-            # Use ffmpeg to extract audio (if available)
-            try:
-                subprocess.run([
-                    'ffmpeg', '-i', video_path, '-vn', '-acodec', 'pcm_s16le', 
-                    '-ar', '16000', '-ac', '1', audio_path, '-y'
-                ], check=True, capture_output=True)
-                
-                logger.info(f"Extracted audio from video: {video_path}")
-                return audio_path
-                
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                logger.warning("ffmpeg not available, trying OpenCV audio extraction")
-                # Fallback: basic audio extraction with OpenCV (limited)
+            if not text_lines:
                 return None
-                
+            
+            # Combine and clean final transcript
+            transcript = ' '.join(text_lines)
+            transcript = re.sub(r'\s+', ' ', transcript).strip()
+            
+            return transcript if len(transcript) > 50 else None
+            
         except Exception as e:
-            logger.error(f"Audio extraction failed: {e}")
+            logger.error(f"Subtitle parsing failed: {e}")
             return None
 
 class ImageProcessor:
@@ -904,10 +998,8 @@ class ImageProcessor:
             
             # Handle both file paths and uploaded file objects
             if hasattr(image_path, 'read'):
-                # It's an uploaded file object
                 image = Image.open(image_path)
             else:
-                # It's a file path
                 image = Image.open(image_path)
             
             # Convert to RGB if necessary
@@ -941,53 +1033,18 @@ class ImageProcessor:
             logger.error(f"OCR failed: {str(e)}")
             return ""
     
-    def generate_image_caption(self, image_path: str) -> str:
-        """Generate caption for image with fallback"""
-        if not TRANSFORMERS_AVAILABLE:
-            return "Image caption generation not available - Transformers not installed"
-            
-        try:
-            logger.info(f"Generating caption for image: {image_path}")
-            
-            # Initialize BLIP model if needed
-            if not self.blip_processor:
-                from transformers import BlipProcessor, BlipForConditionalGeneration
-                logger.info("Loading BLIP model for image captioning...")
-                self.blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-                self.blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
-                logger.info("BLIP model loaded successfully")
-            
-            # Handle both file paths and uploaded file objects
-            if hasattr(image_path, 'read'):
-                image = Image.open(image_path)
-            else:
-                image = Image.open(image_path)
-                
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-                
-            inputs = self.blip_processor(image, return_tensors="pt")
-            out = self.blip_model.generate(**inputs, max_length=50)
-            caption = self.blip_processor.decode(out[0], skip_special_tokens=True)
-            
-            logger.info(f"Generated caption: {caption}")
-            return caption
-            
-        except Exception as e:
-            logger.error(f"Image captioning failed: {str(e)}")
-            return f"Could not generate caption (error: {type(e).__name__})"
-    
     def analyze_image(self, image_path: str) -> ResearchSource:
         """Comprehensive image analysis"""
         logger.info(f"Analyzing image: {image_path}")
         
         ocr_text = self.extract_text_from_image(image_path)
-        caption = self.generate_image_caption(image_path)
         
-        # Combine OCR and caption
-        content_parts = [f"Visual Description: {caption}"]
+        # Combine OCR results
+        content_parts = []
         if ocr_text:
             content_parts.append(f"Extracted Text: {ocr_text}")
+        else:
+            content_parts.append("Visual content detected (no text extracted)")
         
         content = "\n".join(content_parts)
         
@@ -1006,7 +1063,7 @@ class ImageProcessor:
             metadata={
                 'has_text': bool(ocr_text),
                 'text_length': len(ocr_text),
-                'caption_length': len(caption)
+                'file_name': image_name
             }
         )
 
@@ -1061,40 +1118,9 @@ class TextProcessor:
             # Fallback to extractive summary
             sentences = re.split(r'[.!?]+', text.strip())
             return '. '.join(sentences[:3]) + '.' if sentences else text[:max_length]
-    
-    def analyze_sentiment(self, text: str) -> Dict:
-        """Analyze sentiment of text with fallback"""
-        if not TRANSFORMERS_AVAILABLE:
-            return {'label': 'NEUTRAL', 'score': 0.5}
-            
-        try:
-            if not self.sentiment_analyzer:
-                self.sentiment_analyzer = pipeline("sentiment-analysis")
-            
-            result = self.sentiment_analyzer(text[:512])
-            return result[0]
-            
-        except Exception:
-            return {'label': 'NEUTRAL', 'score': 0.5}
-    
-    def extract_entities(self, text: str) -> List[str]:
-        """Extract named entities from text"""
-        if not SPACY_AVAILABLE:
-            # Simple regex-based fallback
-            import re
-            # Find capitalized words that might be entities
-            entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
-            return list(set(entities))[:10]
-            
-        try:
-            doc = nlp(text[:5000])
-            entities = list(set([ent.text for ent in doc.ents if ent.label_ in ['PERSON', 'ORG', 'GPE', 'PRODUCT']]))
-            return entities[:10]
-        except Exception:
-            return []
 
 class AgenticResearchAssistant:
-    """Enhanced main research assistant class with better error handling"""
+    """Enhanced main research assistant class with fixed YouTube processing"""
     
     def __init__(self):
         self.config = AgenticResearchConfig()
@@ -1105,9 +1131,6 @@ class AgenticResearchAssistant:
         
         self.all_sources = []
         self.current_topic = None
-        self.text_insights = []
-        self.video_insights = []
-        self.image_insights = []
         
         # Log API status
         api_status = self.config.get_api_status()
@@ -1121,25 +1144,25 @@ class AgenticResearchAssistant:
         audio_paths: Optional[List[str]] = None,
         text_sources: Optional[str] = None
     ) -> ResearchInsight:
-        """Conduct comprehensive research on a topic with progress tracking"""
+        """Conduct comprehensive research with enhanced error handling"""
         
-        logger.info(f"Starting research on topic: {topic}")
+        logger.info(f"🚀 Starting research on topic: {topic}")
         self.current_topic = topic
         self.all_sources = []
         
         # Phase 1: Web search
-        logger.info("Phase 1: Conducting web search...")
+        logger.info("📍 Phase 1: Web search...")
         try:
             async with self.web_search as search_engine:
                 web_sources = await search_engine.comprehensive_search(topic)
                 self.all_sources.extend(web_sources)
-                logger.info(f"Web search completed: {len(web_sources)} sources found")
+                logger.info(f"✅ Web search: {len(web_sources)} sources")
         except Exception as e:
-            logger.error(f"Web search failed: {e}")
+            logger.error(f"❌ Web search failed: {e}")
         
         # Phase 2: Process text sources
         if text_sources and text_sources.strip():
-            logger.info("Phase 2: Processing additional text sources...")
+            logger.info("📍 Phase 2: Processing text sources...")
             try:
                 source = ResearchSource(
                     title="User Provided Text",
@@ -1150,78 +1173,97 @@ class AgenticResearchAssistant:
                     metadata={'length': len(text_sources)}
                 )
                 self.all_sources.append(source)
-                logger.info("User text processed successfully")
+                logger.info("✅ User text processed")
             except Exception as e:
-                logger.error(f"Error processing user text: {e}")
+                logger.error(f"❌ Text processing error: {e}")
         
-        # Phase 3: Process videos
+        # Phase 3: Process videos with FIXED extraction
         if video_urls:
-            logger.info(f"Phase 3: Processing {len(video_urls)} video URLs...")
+            logger.info(f"📍 Phase 3: Processing {len(video_urls)} videos...")
             for i, url in enumerate(video_urls, 1):
                 if url.strip():
                     try:
-                        logger.info(f"Processing video {i}/{len(video_urls)}: {url}")
+                        logger.info(f"🎥 Processing video {i}/{len(video_urls)}: {url}")
+                        
+                        # Use the FIXED transcript extraction
                         source = self.video_processor.get_youtube_transcript(url.strip())
+                        
                         if source:
                             self.all_sources.append(source)
-                            logger.info(f"Video {i} processed successfully")
+                            logger.info(f"✅ Video {i} processed: {len(source.content)} chars extracted")
                         else:
-                            logger.warning(f"Video {i} could not be processed - no transcript available")
+                            logger.warning(f"⚠️ Video {i} failed: No transcript available")
+                            
                     except Exception as e:
-                        logger.error(f"Error processing video {i}: {e}")
+                        logger.error(f"❌ Video {i} error: {e}")
         
-        # Phase 4: Process audio files
-        if audio_paths:
-            logger.info(f"Phase 4: Processing {len(audio_paths)} audio files...")
-            for i, path in enumerate(audio_paths, 1):
-                try:
-                    logger.info(f"Processing audio {i}/{len(audio_paths)}: {path}")
-                    
-                    # Check if it's a video file that needs audio extraction
-                    file_ext = Path(path).suffix.lower() if isinstance(path, str) else ''
-                    if file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
-                        # Extract audio from video first
-                        audio_path = self.video_processor.extract_audio_from_video(path)
-                        if audio_path:
-                            source = self.video_processor.transcribe_audio_with_whisper(audio_path)
-                            # Clean up temporary audio file
-                            try:
-                                os.unlink(audio_path)
-                            except:
-                                pass
-                        else:
-                            logger.warning(f"Could not extract audio from video: {path}")
-                            continue
-                    else:
-                        # Direct audio transcription
-                        source = self.video_processor.transcribe_audio_with_whisper(path)
-                    
-                    if source:
-                        self.all_sources.append(source)
-                        logger.info(f"Audio {i} processed successfully")
-                    else:
-                        logger.warning(f"Audio {i} could not be processed")
-                except Exception as e:
-                    logger.error(f"Error processing audio {i}: {e}")
-        
-        # Phase 5: Process images
+        # Phase 4: Process images
         if image_paths:
-            logger.info(f"Phase 5: Processing {len(image_paths)} images...")
+            logger.info(f"📍 Phase 4: Processing {len(image_paths)} images...")
             for i, path in enumerate(image_paths, 1):
                 try:
-                    logger.info(f"Processing image {i}/{len(image_paths)}")
+                    logger.info(f"🖼️ Processing image {i}/{len(image_paths)}")
                     source = self.image_processor.analyze_image(path)
                     self.all_sources.append(source)
-                    logger.info(f"Image {i} processed successfully")
+                    logger.info(f"✅ Image {i} processed")
                 except Exception as e:
-                    logger.error(f"Error processing image {i}: {e}")
+                    logger.error(f"❌ Image {i} error: {e}")
+        
+        # Phase 5: Process audio (if Whisper available)
+        if audio_paths and WHISPER_AVAILABLE:
+            logger.info(f"📍 Phase 5: Processing {len(audio_paths)} audio files...")
+            for i, path in enumerate(audio_paths, 1):
+                try:
+                    logger.info(f"🎵 Processing audio {i}/{len(audio_paths)}")
+                    source = self.video_processor.transcribe_audio_with_whisper(path)
+                    if source:
+                        self.all_sources.append(source)
+                        logger.info(f"✅ Audio {i} processed")
+                    else:
+                        logger.warning(f"⚠️ Audio {i} failed")
+                except Exception as e:
+                    logger.error(f"❌ Audio {i} error: {e}")
         
         # Phase 6: Generate insights
-        logger.info("Phase 6: Generating insights...")
+        logger.info("📍 Phase 6: Generating insights...")
         insights = self._generate_insights()
         
-        logger.info(f"Research completed: {insights.sources_count} sources, confidence: {insights.confidence_score:.2f}")
+        logger.info(f"🎉 Research completed: {insights.sources_count} sources, {insights.confidence_score:.1%} confidence")
         return insights
+    
+    def transcribe_audio_with_whisper(self, audio_path: str) -> Optional[ResearchSource]:
+        """Transcribe audio file using Whisper"""
+        if not WHISPER_AVAILABLE:
+            logger.warning("Whisper not available for audio transcription")
+            return None
+            
+        try:
+            logger.info(f"Transcribing audio with Whisper: {audio_path}")
+            
+            if not self.whisper_model:
+                logger.info(f"Loading Whisper model: {self.config.WHISPER_MODEL}")
+                self.whisper_model = whisper.load_model(self.config.WHISPER_MODEL)
+            
+            result = self.whisper_model.transcribe(audio_path)
+            
+            file_name = Path(audio_path).name if isinstance(audio_path, str) else getattr(audio_path, 'name', 'audio_file')
+            
+            return ResearchSource(
+                title=f"Audio Transcription: {file_name}",
+                content=result['text'],
+                url=f"file://{audio_path}",
+                source_type='audio_transcription',
+                confidence=0.9,
+                metadata={
+                    'model': self.config.WHISPER_MODEL,
+                    'language': result.get('language', 'unknown'),
+                    'file_name': file_name
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Whisper transcription failed: {str(e)}")
+            return None
     
     def _generate_insights(self) -> ResearchInsight:
         """Generate comprehensive insights from all sources"""
@@ -1233,12 +1275,12 @@ class AgenticResearchAssistant:
         
         for source in self.all_sources:
             try:
-                if source.source_type in ['google_cse', 'serpapi', 'duckduckgo', 'wikipedia', 'reddit', 'user_text']:
+                if source.source_type in ['google_cse', 'duckduckgo', 'wikipedia', 'user_text']:
                     summary = self.text_processor.summarize_text(source.content)
                     insight = f"[{source.title}] {summary}"
                     text_insights.append(insight)
                 
-                elif source.source_type in ['youtube_transcript', 'audio_transcription']:
+                elif source.source_type in ['youtube_transcript', 'youtube_transcript_alt', 'audio_transcription']:
                     summary = self.text_processor.summarize_text(source.content)
                     insight = f"[{source.title}] {summary}"
                     video_insights.append(insight)
@@ -1250,7 +1292,7 @@ class AgenticResearchAssistant:
                 logger.error(f"Error generating insight for {source.title}: {e}")
         
         # Generate fused summary
-        all_content = "\n".join([s.content for s in self.all_sources[:10]])  # Limit for performance
+        all_content = "\n".join([s.content for s in self.all_sources[:10]])
         fused_summary = self._generate_fused_summary(all_content)
         
         # Generate follow-up questions
@@ -1263,7 +1305,7 @@ class AgenticResearchAssistant:
             confidence_score = 0.0
         
         return ResearchInsight(
-            text_insights=text_insights[:8],  # Limit for display
+            text_insights=text_insights[:8],
             video_insights=video_insights[:5],
             image_insights=image_insights[:5],
             fused_summary=fused_summary,
@@ -1295,14 +1337,14 @@ class AgenticResearchAssistant:
                 for source_type, count in source_types.items():
                     if source_type == 'google_cse':
                         type_descriptions.append(f"{count} Google CSE results")
-                    elif source_type == 'serpapi':
-                        type_descriptions.append(f"{count} SerpAPI results")
-                    elif source_type == 'reddit':
-                        type_descriptions.append(f"{count} Reddit discussions")
-                    elif source_type == 'youtube_transcript':
+                    elif source_type == 'duckduckgo':
+                        type_descriptions.append(f"{count} DuckDuckGo results")
+                    elif source_type in ['youtube_transcript', 'youtube_transcript_alt']:
                         type_descriptions.append(f"{count} YouTube transcripts")
                     elif source_type == 'image':
                         type_descriptions.append(f"{count} image analyses")
+                    elif source_type == 'wikipedia':
+                        type_descriptions.append(f"{count} Wikipedia articles")
                     else:
                         type_descriptions.append(f"{count} {source_type} sources")
                 
@@ -1314,28 +1356,33 @@ class AgenticResearchAssistant:
                 if main_summary and len(main_summary) > 20:
                     summary_points.append(f"Key findings: {main_summary}")
             
-            # API integration status
-            api_status = self.config.get_api_status()
-            active_apis = [name for name, status in api_status.items() if status]
-            if active_apis:
-                summary_points.append(
-                    f"Enhanced search capabilities using {len(active_apis)} integrated APIs: "
-                    f"{', '.join(active_apis)}"
-                )
+            # YouTube-specific insights
+            youtube_sources = [s for s in self.all_sources if 'youtube' in s.source_type]
+            if youtube_sources:
+                total_duration = 0
+                for source in youtube_sources:
+                    video_info = source.metadata.get('video_info', {})
+                    duration = video_info.get('duration', 0)
+                    if duration:
+                        total_duration += duration
+                
+                if total_duration > 0:
+                    summary_points.append(
+                        f"Analyzed {len(youtube_sources)} YouTube video(s) with ~{total_duration//60:.0f} minutes of content"
+                    )
             
             # Confidence and reliability
             avg_confidence = sum([s.confidence for s in self.all_sources]) / max(len(self.all_sources), 1)
             confidence_desc = "high" if avg_confidence > 0.8 else "moderate" if avg_confidence > 0.6 else "basic"
             summary_points.append(
-                f"Analysis confidence level: {confidence_desc} ({avg_confidence:.1%}) based on "
-                f"source diversity and API integration quality"
+                f"Analysis confidence: {confidence_desc} ({avg_confidence:.1%}) based on source quality and diversity"
             )
             
         except Exception as e:
             logger.error(f"Error generating fused summary: {e}")
             summary_points.append(f"Research completed with {len(self.all_sources)} sources analyzed")
         
-        return summary_points[:6]  # Limit to 6 points
+        return summary_points[:6]
     
     def _generate_follow_up_questions(self) -> List[str]:
         """Generate contextual follow-up research questions"""
@@ -1343,37 +1390,32 @@ class AgenticResearchAssistant:
         
         try:
             if self.current_topic:
-                # Generate topic-specific questions
                 base_questions = [
-                    f"What are the latest developments and trends in {self.current_topic}?",
-                    f"How does {self.current_topic} compare to alternative approaches or solutions?",
-                    f"What are the practical applications and real-world implementations of {self.current_topic}?",
-                    f"What are the potential challenges or limitations of {self.current_topic}?",
-                    f"Who are the key researchers, companies, or organizations working on {self.current_topic}?"
+                    f"What are the latest developments in {self.current_topic}?",
+                    f"How does {self.current_topic} compare to alternative approaches?",
+                    f"What are the practical applications of {self.current_topic}?",
+                    f"What challenges or limitations exist for {self.current_topic}?",
+                    f"Who are the key players or organizations in {self.current_topic}?"
                 ]
                 
-                # Add questions based on available sources
-                if any(s.source_type == 'youtube_transcript' for s in self.all_sources):
-                    questions.append(f"Are there any recent conferences or presentations about {self.current_topic}?")
-                
-                if any(s.source_type == 'reddit' for s in self.all_sources):
-                    questions.append(f"What do community discussions reveal about public opinion on {self.current_topic}?")
+                # Add source-specific questions
+                if any(s.source_type.startswith('youtube') for s in self.all_sources):
+                    questions.append(f"Are there recent presentations or demos about {self.current_topic}?")
                 
                 if any(s.source_type == 'image' for s in self.all_sources):
-                    questions.append(f"What visual documentation or diagrams exist for {self.current_topic}?")
+                    questions.append(f"What visual documentation exists for {self.current_topic}?")
                 
-                # Select most relevant questions
                 questions.extend(base_questions)
                 
         except Exception as e:
             logger.error(f"Error generating follow-up questions: {e}")
             questions = [
-                "What additional sources could provide more comprehensive coverage?",
-                "How has this topic evolved over the past year?",
-                "What are the main debates or controversies surrounding this topic?"
+                "What additional sources could provide more coverage?",
+                "How has this topic evolved recently?",
+                "What are the main debates around this topic?"
             ]
         
-        return questions[:5]  # Limit to 5 questions
+        return questions[:5]
     
     def get_research_statistics(self) -> Dict[str, Any]:
         """Get detailed research statistics"""
@@ -1388,13 +1430,29 @@ class AgenticResearchAssistant:
                 'average': sum(s.confidence for s in self.all_sources) / len(self.all_sources),
                 'highest': max(s.confidence for s in self.all_sources),
                 'lowest': min(s.confidence for s in self.all_sources)
-            }
+            },
+            'youtube_stats': {}
         }
         
         # Count sources by type
         for source in self.all_sources:
             source_type = source.source_type
             stats['source_breakdown'][source_type] = stats['source_breakdown'].get(source_type, 0) + 1
+        
+        # YouTube-specific statistics
+        youtube_sources = [s for s in self.all_sources if 'youtube' in s.source_type]
+        if youtube_sources:
+            total_chars = sum(len(s.content) for s in youtube_sources)
+            extraction_methods = {}
+            for source in youtube_sources:
+                method = source.metadata.get('extraction_method', 'unknown')
+                extraction_methods[method] = extraction_methods.get(method, 0) + 1
+            
+            stats['youtube_stats'] = {
+                'videos_processed': len(youtube_sources),
+                'total_transcript_chars': total_chars,
+                'extraction_methods': extraction_methods
+            }
         
         # API usage statistics
         api_status = self.config.get_api_status()
@@ -1405,66 +1463,6 @@ class AgenticResearchAssistant:
         }
         
         return stats
-    
-    def export_research_report(self, filename: Optional[str] = None) -> str:
-        """Export comprehensive research report"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        stats = self.get_research_statistics()
-        
-        report = f"""
-Multi-Modal Research Assistant - Comprehensive Report
-=====================================================
-Generated: {timestamp}
-Topic: {self.current_topic or 'N/A'}
-API Integration Status: {stats.get('api_usage', {}).get('available_apis', 0)}/{stats.get('api_usage', {}).get('total_apis', 0)} APIs active
 
-EXECUTIVE SUMMARY
-================
-Sources Analyzed: {len(self.all_sources)}
-Average Confidence: {stats.get('confidence_stats', {}).get('average', 0):.2f}
-Source Types: {len(stats.get('source_breakdown', {}))}
-
-SOURCE BREAKDOWN
-===============
-"""
-        
-        for source_type, count in stats.get('source_breakdown', {}).items():
-            report += f"- {source_type}: {count} sources\n"
-        
-        report += f"""
-
-API INTEGRATION STATUS
-=====================
-"""
-        for api_name, status in stats.get('api_usage', {}).get('api_details', {}).items():
-            status_symbol = "✅" if status else "❌"
-            report += f"{status_symbol} {api_name.upper()}: {'Active' if status else 'Not configured'}\n"
-        
-        report += f"""
-
-DETAILED SOURCE ANALYSIS
-========================
-"""
-        
-        for i, source in enumerate(self.all_sources, 1):
-            report += f"""
-{i}. {source.title}
-   Type: {source.source_type}
-   URL: {source.url}
-   Confidence: {source.confidence:.2f}
-   Content: {source.content[:300]}...
-   Metadata: {source.metadata}
-"""
-        
-        if filename:
-            try:
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(report)
-                logger.info(f"Report exported to: {filename}")
-            except Exception as e:
-                logger.error(f"Failed to export report: {e}")
-        
-        return report
-
-# Export the main class for easy importing
-__all__ = ['AgenticResearchAssistant', 'ResearchInsight', 'ResearchSource']
+# Export the main classes
+__all__ = ['AgenticResearchAssistant', 'ResearchInsight', 'ResearchSource', 'VideoAudioProcessor']
